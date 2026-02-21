@@ -1,0 +1,546 @@
+# zh: Undefined 配置文件 - 与 NagaAgent 集成
+# en: Undefined configuration file - Integrated with NagaAgent
+
+# zh: 机器人小号配置
+# en: Bot account settings
+[core]
+# zh: 机器人QQ号（从NagaAgent配置读取）
+# en: Bot QQ number (from NagaAgent config)
+bot_qq = 3681817929
+# zh: 超级管理员QQ号
+# en: Superadmin QQ number
+superadmin_qq = 1523878699
+# zh: 初始管理员QQ号列表
+# en: Initial admin QQ list
+admin_qq = []
+# zh: 音频转发代理QQ号
+# en: Audio forward proxy QQ number
+forward_proxy_qq = 0
+# zh: 是否处理每条群消息
+# en: Process every group message
+process_every_message = true
+# zh: 是否处理私聊消息
+# en: Process private messages
+process_private_message = true
+# zh: 是否响应拍一拍
+# en: Respond to poke events
+process_poke_message = true
+# zh: 最近历史消息条数上限
+# en: Max number of recent messages
+context_recent_messages_limit = 20
+# zh: 模型调用失败时最大重试次数
+# en: Max retries for failed model API requests
+ai_request_max_retries = 2
+# zh: 是否启用NagaAgent模式
+# en: Enable NagaAgent mode
+nagaagent_mode_enabled = true
+# zh: 是否启用飞行前摘要预注册
+# en: Enable inflight summary pre-register
+inflight_pre_register_enabled = true
+# zh: 是否启用飞行摘要
+# en: Enable inflight summary
+inflight_summary_enabled = true
+
+# zh: 会话白名单（访问控制）
+# en: Session allowlist (access control)
+[access]
+# zh: 允许处理/发送的群号白名单（留空 = 不限制）
+# en: Allowed group IDs. Empty = no restriction
+allowed_group_ids = []
+# zh: 允许处理/发送的私聊 QQ 白名单（留空 = 不限制）
+# en: Allowed private-chat user IDs. Empty = no restriction
+allowed_private_ids = []
+# zh: 超级管理员是否可在私聊中绕过 "allowed_private_ids"
+# en: Allow superadmin to bypass "allowed_private_ids"
+superadmin_bypass_allowlist = true
+
+# zh: OneBot WebSocket 配置（与NagaAgent的QQ配置一致）
+# en: OneBot WebSocket settings (consistent with NagaAgent QQ config)
+[onebot]
+# zh: NapCat WebSocket 地址
+# en: NapCat WebSocket URL
+ws_url = "ws://127.0.0.1:3001"
+# zh: HTTP API 地址
+# en: HTTP API URL
+http_url = "http://127.0.0.1:3000"
+# zh: Access Token（可选，HTTP/WebSocket通用）
+# en: Access token (optional, shared for HTTP/WebSocket)
+token = ""
+# zh: HTTP专用Token（优先于通用token）
+# en: HTTP-specific token (priority over shared token)
+http_token = "#.SSIE<i8OC?r3#}"
+# zh: WebSocket专用Token（优先于通用token）
+# en: WebSocket-specific token (priority over shared token)
+ws_token = "?.?oYv2cV(>4cUW?"
+# zh: 是否自动重连
+# en: Auto reconnect
+auto_reconnect = true
+# zh: 重连间隔（秒）
+# en: Reconnect interval (seconds)
+reconnect_interval = 5
+
+# zh: 对话模型配置（使用 NagaAgent 的 DeepSeek 配置）
+# en: Chat model config (using NagaAgent DeepSeek config)
+[models.chat]
+# zh: OpenAI-compatible 基址 URL
+# en: OpenAI-compatible base URL
+api_url = "https://api.deepseek.com/v1"
+# zh: Chat 模型 API Key
+# en: Chat model API key
+api_key = "sk-258c400857ae44dc9dd1e6f82d5038d0"
+# zh: Chat 模型名称
+# en: Chat model name
+model_name = "deepseek-chat"
+# zh: 最大生成 tokens
+# en: Max generation tokens
+max_tokens = 8192
+# zh: 队列发车间隔（秒）
+# en: Queue interval (seconds)
+queue_interval_seconds = 1.0
+# zh: 是否启用 thinking（思维链）
+# en: Enable thinking (reasoning)
+thinking_enabled = false
+# zh: thinking 预算 tokens
+# en: Thinking-budget tokens
+thinking_budget_tokens = 20000
+# zh: 是否在请求中发送 budget_tokens
+# en: Whether to include budget_tokens in request
+thinking_include_budget = true
+# zh: 思维链工具调用兼容
+# en: Thinking tool-call compatibility
+thinking_tool_call_compat = false
+
+# zh: 视觉模型配置（使用 NagaAgent 的 DeepSeek 配置）
+# en: Vision model config (using NagaAgent DeepSeek config)
+[models.vision]
+# zh: OpenAI-compatible 基址 URL
+# en: OpenAI-compatible base URL
+api_url = "https://api.deepseek.com/v1"
+# zh: Vision 模型 API Key
+# en: Vision model API key
+api_key = "sk-258c400857ae44dc9dd1e6f82d5038d0"
+# zh: Vision 模型名称
+# en: Vision model name
+model_name = "deepseek-chat"
+# zh: 队列发车间隔（秒）
+# en: Queue interval (seconds)
+queue_interval_seconds = 1.0
+# zh: 是否启用 thinking（思维链）
+# en: Enable thinking (reasoning)
+thinking_enabled = false
+# zh: thinking 预算 tokens
+# en: Thinking-budget tokens
+thinking_budget_tokens = 20000
+# zh: 是否在请求中发送 budget_tokens
+# en: Whether to include budget_tokens in request
+thinking_include_budget = true
+# zh: 思维链工具调用兼容
+# en: Thinking tool-call compatibility
+thinking_tool_call_compat = false
+
+# zh: 安全模型配置（使用对话模型作为后备）
+# en: Security model config (using chat model as fallback)
+[models.security]
+# zh: 是否启用安全模型检测与注入响应
+# en: Enable security-model detection and injection response
+enabled = false
+# zh: OpenAI-compatible 基址 URL
+# en: OpenAI-compatible base URL
+api_url = "https://api.deepseek.com/v1"
+# zh: Security 模型 API Key
+# en: Security model API key
+api_key = "sk-258c400857ae44dc9dd1e6f82d5038d0"
+# zh: Security 模型名称
+# en: Security model name
+model_name = "deepseek-chat"
+# zh: 可选限制：最大生成 tokens
+# en: Optional limit: max generation tokens
+max_tokens = 100
+# zh: 队列发车间隔（秒）
+# en: Queue interval (seconds)
+queue_interval_seconds = 1.0
+# zh: 是否启用 thinking（思维链）
+# en: Enable thinking (reasoning)
+thinking_enabled = false
+# zh: thinking 预算 tokens
+# en: Thinking-budget tokens
+thinking_budget_tokens = 0
+# zh: 是否在请求中发送 budget_tokens
+# en: Whether to include budget_tokens in request
+thinking_include_budget = true
+# zh: 思维链工具调用兼容
+# en: Thinking tool-call compatibility
+thinking_tool_call_compat = false
+
+# zh: Agent 模型配置（使用 NagaAgent 的 DeepSeek 配置）
+# en: Agent model config (using NagaAgent DeepSeek config)
+[models.agent]
+# zh: OpenAI-compatible 基址 URL
+# en: OpenAI-compatible base URL
+api_url = "https://api.deepseek.com/v1"
+# zh: Agent 模型 API Key
+# en: Agent model API key
+api_key = "sk-258c400857ae44dc9dd1e6f82d5038d0"
+# zh: Agent 模型名称
+# en: Agent model name
+model_name = "deepseek-chat"
+# zh: 最大生成 tokens
+# en: Max generation tokens
+max_tokens = 8192
+# zh: 队列发车间隔（秒）
+# en: Queue interval (seconds)
+queue_interval_seconds = 1.0
+# zh: 是否启用 thinking（思维链）
+# en: Enable thinking (reasoning)
+thinking_enabled = false
+# zh: thinking 预算 tokens
+# en: Thinking-budget tokens
+thinking_budget_tokens = 20000
+# zh: 是否在请求中发送 budget_tokens
+# en: Whether to include budget_tokens in request
+thinking_include_budget = true
+# zh: 思维链工具调用兼容
+# en: Thinking tool-call compatibility
+thinking_tool_call_compat = false
+
+# zh: 飞行摘要模型配置
+# en: Inflight summary model config
+[models.inflight_summary]
+# zh: OpenAI-compatible 基址 URL
+# en: OpenAI-compatible base URL
+api_url = "https://api.deepseek.com/v1"
+# zh: Inflight Summary 模型 API Key
+# en: Inflight Summary model API key
+api_key = "sk-258c400857ae44dc9dd1e6f82d5038d0"
+# zh: Inflight Summary 模型名称
+# en: Inflight Summary model name
+model_name = "deepseek-chat"
+# zh: 最大生成 tokens
+# en: Max generation tokens
+max_tokens = 2000
+# zh: 队列发车间隔（秒）
+# en: Queue interval (seconds)
+queue_interval_seconds = 1.0
+# zh: 是否启用 thinking（思维链）
+# en: Enable thinking (reasoning)
+thinking_enabled = false
+# zh: thinking 预算 tokens
+# en: Thinking-budget tokens
+thinking_budget_tokens = 0
+# zh: 是否在请求中发送 budget_tokens
+# en: Whether to include budget_tokens in request
+thinking_include_budget = true
+# zh: 思维链工具调用兼容
+# en: Thinking tool-call compatibility
+thinking_tool_call_compat = false
+
+# zh: 日志配置
+# en: Logging settings
+[logging]
+# zh: 日志级别
+# en: Log level
+log_level = "INFO"
+# zh: 日志文件路径
+# en: Log file path
+log_file_path = "logs/undefined.log"
+# zh: 日志文件最大大小（MB）
+# en: Log file max size (MB)
+log_max_size_mb = 10
+# zh: 日志备份数量
+# en: Log backup count
+log_backup_count = 5
+# zh: 是否启用终端日志输出
+# en: Enable TTY log output
+log_tty_enabled = true
+# zh: 是否记录思考过程
+# en: Log thinking process
+log_thinking = false
+
+# zh: 工具相关配置
+# en: Tool-related settings
+[tools]
+# zh: 工具调用点分隔符（用于分步提示）
+# en: Tool call dot delimiter (for step-by-step prompts)
+dot_delimiter = "."
+# zh: 是否启用工具描述截断
+# en: Enable tool description truncation
+description_truncate_enabled = true
+# zh: 工具描述最大长度
+# en: Tool description max length
+description_max_len = 500
+# zh: 是否清理工具描述中的Markdown
+# en: Sanitize Markdown in tool descriptions
+sanitize_verbose = false
+# zh: 工具描述预览长度
+# en: Tool description preview length
+description_preview_len = 100
+
+# zh: Agent intro 自动生成配置
+# en: Agent intro auto-generation settings
+[agents.intro_autogen]
+# zh: 是否启用 Agent intro 自动生成
+# en: Enable Agent intro auto-generation
+enabled = true
+# zh: 队列处理间隔（秒）
+# en: Queue processing interval (seconds)
+queue_interval_seconds = 60
+# zh: 最大生成 tokens
+# en: Max generation tokens
+max_tokens = 500
+# zh: Agent intro 哈希文件路径
+# en: Agent intro hash file path
+hash_path = "data/agent_intro_hashes.json"
+
+# zh: MCP 配置
+# en: MCP settings
+[mcp]
+# zh: MCP 配置文件路径
+# en: MCP config file path
+config_path = "config/mcp.json"
+# zh: 是否预加载工具
+# en: Preload tools
+prefetch_tools = true
+# zh: 预加载工具隐藏列表
+# en: Prefetch tools hide list
+prefetch_tools_hide = []
+
+# zh: 搜索配置
+# en: Search settings
+[search]
+# zh: SearXNG 搜索 URL（与NagaAgent一致）
+# en: SearXNG search URL (consistent with NagaAgent)
+searxng_url = "https://searxng.pylindex.top"
+
+# zh: 代理配置（目前未启用）
+# en: Proxy settings (currently disabled)
+[proxy]
+# zh: 是否使用代理
+# en: Use proxy
+use_proxy = false
+# zh: HTTP 代理地址
+# en: HTTP proxy URL
+http_proxy = ""
+# zh: HTTPS 代理地址
+# en: HTTPS proxy URL
+https_proxy = ""
+
+# zh: 网络请求配置
+# en: Network request settings
+[network]
+# zh: 网络请求超时时间（秒）
+# en: Network request timeout (seconds)
+timeout = 30
+# zh: 网络请求重试次数
+# en: Network request retries
+retries = 3
+
+# zh: 第三方 API 配置
+# en: Third-party API settings
+[apis]
+# zh: 小讯API 基址 URL
+# en: XXAPI base URL
+xxapi_base_url = "https://api.xxxx.com"
+# zh: 行之阁API 基址 URL
+# en: Xingzhige API base URL
+api_xingzhige_base_url = "https://api.xzxxx.com"
+# zh: 捷酷云API 基址 URL
+# en: JK Cloud API base URL
+api_jkyai_base_url = "https://api.jkxxx.com"
+# zh: 心知天气API 基址 URL
+# en: Seniverse weather API base URL
+api_seniverse_base_url = "https://api.seniverse.com"
+# zh: 心知天气 API Key（留空则不使用）
+# en: Seniverse weather API key (leave empty to disable)
+weather_api_key = ""
+# zh: 小讯 API Token（留空则不使用）
+# en: XXAPI token (leave empty to disable)
+xxapi_api_token = ""
+
+# zh: Token 使用统计配置
+# en: Token usage statistics settings
+[tokens]
+# zh: Token 使用统计最大大小（MB）
+# en: Token usage max size (MB)
+max_size_mb = 100
+# zh: Token 使用统计最大归档数
+# en: Token usage max archives
+max_archives = 10
+# zh: Token 使用统计最大总大小（MB）
+# en: Token usage max total size (MB)
+max_total_mb = 1000
+# zh: Token 使用归档清理模式
+# en: Token usage archive prune mode
+archive_prune_mode = "age"
+
+# zh: 技能热重载配置
+# en: Skills hot-reload settings
+[skills_hot_reload]
+# zh: 是否启用技能热重载
+# en: Enable skills hot-reload
+enabled = false
+# zh: 热重载检查间隔（秒）
+# en: Hot-reload check interval (seconds)
+interval_seconds = 60
+# zh: 热重载防抖时间（秒）
+# en: Hot-reload debounce time (seconds)
+debounce_seconds = 5
+
+# zh: 彩蛋配置
+# en: Easter egg settings
+[easter_eggs]
+# zh: Agent 调用消息模式（标准/完整/简洁）
+# en: Agent call message mode (standard/full/compact)
+agent_call_message_mode = "standard"
+
+# zh: WebUI 配置
+# en: WebUI settings
+[webui]
+# zh: WebUI 监听地址
+# en: WebUI listen address
+url = "127.0.0.1"
+# zh: WebUI 端口
+# en: WebUI port
+port = 8787
+# zh: WebUI 密码
+# en: WebUI password
+password = "changeme"
+
+# zh: 代码交付配置（暂未启用）
+# en: Code delivery settings (not enabled yet)
+[code_delivery]
+# zh: 是否启用代码交付
+# en: Enable code delivery
+enabled = false
+# zh: 代码交付任务根目录
+# en: Code delivery task root directory
+task_root = "data/code_delivery"
+# zh: Docker 镜像
+# en: Docker image
+docker_image = "python:3.11-slim"
+# zh: 容器名称前缀
+# en: Container name prefix
+container_name_prefix = "undefined_cd_"
+# zh: 容器名称后缀
+# en: Container name suffix
+container_name_suffix = "_container"
+# zh: 命令超时时间（秒）
+# en: Command timeout (seconds)
+command_timeout = 60
+# zh: 最大命令输出长度
+# en: Max command output length
+max_command_output = 10000
+# zh: 默认归档格式
+# en: Default archive format
+default_archive_format = "zip"
+# zh: 最大归档大小（MB）
+# en: Max archive size (MB)
+max_archive_size_mb = 50
+# zh: 完成时是否清理容器
+# en: Cleanup container on finish
+cleanup_on_finish = true
+# zh: 开始时是否清理容器
+# en: Cleanup container on start
+cleanup_on_start = true
+# zh: LLM 调用最大重试次数
+# en: LLM call max retries
+llm_max_retries = 3
+# zh: LLM 失败时是否通知
+# en: Notify on LLM failure
+notify_on_llm_failure = true
+# zh: 容器内存限制（MB）
+# en: Container memory limit (MB)
+memory_limit_mb = 512
+# zh: 容器 CPU 限制
+# en: Container CPU limit
+cpu_limit = 1.0
+# zh: 命令黑名单
+# en: Command blacklist
+command_blacklist = []
+
+# zh: 消息发送配置
+# en: Message sending settings
+[messages]
+# zh: 发送文本文件最大大小（KB）
+# en: Send text file max size (KB)
+send_text_file_max_size_kb = 500
+
+# zh: Bilibili 视频提取配置
+# en: Bilibili video extraction settings
+[bilibili]
+# zh: 是否启用 Bilibili 视频自动提取
+# en: Enable Bilibili video auto-extraction
+auto_extract_enabled = false
+# zh: Bilibili Cookie（可选）
+# en: Bilibili cookie (optional)
+cookie = ""
+# zh: 首选视频质量
+# en: Preferred video quality
+prefer_quality = 1080
+# zh: 最大视频时长（秒）
+# en: Max video duration (seconds)
+max_duration = 600
+# zh: 最大视频文件大小（MB）
+# en: Max video file size (MB)
+max_file_size_mb = 500
+# zh: 超大视频处理策略（skip/error/quality_downgrade）
+# en: Oversize video strategy (skip/error/quality_downgrade)
+oversize_strategy = "skip"
+# zh: 自动提取群号白名单（留空 = 所有群）
+# en: Auto-extract group whitelist (empty = all groups)
+auto_extract_group_ids = []
+# zh: 自动提取私聊 QQ 白名单（留空 = 所有私聊）
+# en: Auto-extract private whitelist (empty = all privates)
+auto_extract_private_ids = []
+
+# zh: 在线AI绘图配置（与NagaAgent配置一致）
+# en: Online AI drawing settings (consistent with NagaAgent config)
+[online_ai_draw]
+# zh: API地址
+# en: API URL
+api_url = "https://open.bigmodel.cn/api/paas/v4"
+# zh: API Key
+# en: API Key
+api_key = "3786d45d55a241098f3f8136e463b700.lUbRd9iBepGE45SV"
+# zh: 默认模型
+# en: Default model
+default_model = "cogview-3"
+# zh: 默认图片比例
+# en: Default image ratio
+default_size = "1:1"
+# zh: 提供商 (zhipu, openai等)
+# en: Provider (zhipu, openai, etc.)
+provider = "zhipu"
+# zh: 超时时间（秒）
+# en: Timeout (seconds)
+timeout = 120
+
+# zh: 本地AI绘图配置（与NagaAgent配置一致）
+# en: Local AI drawing settings (consistent with NagaAgent config)
+[local_ai_draw]
+# zh: 服务地址
+# en: Service URL
+service_url = "http://127.0.0.1:7860"
+# zh: 服务类型 (sd_webui, sd_api等)
+# en: Service type (sd_webui, sd_api, etc.)
+service_type = "sd_webui"
+# zh: 默认模型
+# en: Default model
+model = "sd1.5anything-v5.safetensors [7f96a1a9ca]"
+# zh: 默认宽度
+# en: Default width
+width = 512
+# zh: 默认高度
+# en: Default height
+height = 512
+# zh: 推理步数
+# en: Inference steps
+steps = 20
+# zh: CFG系数
+# en: CFG scale
+cfg_scale = 7.0
+# zh: 采样器
+# en: Sampler
+sampler = "DPM++ 2M Karras"
+# zh: 超时时间（秒）
+# en: Timeout (seconds)
+timeout = 300

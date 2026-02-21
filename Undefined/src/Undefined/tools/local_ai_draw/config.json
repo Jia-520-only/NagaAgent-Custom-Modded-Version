@@ -1,0 +1,41 @@
+{
+    "type": "function",
+    "function": {
+        "name": "local_ai_draw",
+        "description": "使用本地 AI 绘图模型生成图片（支持 Stable Diffusion、Flux 等模型）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "绘图提示词，描述你想要生成的图片"
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "description": "负面提示词，描述你不想要的内容（可选）"
+                },
+                "width": {
+                    "type": "integer",
+                    "description": "图片宽度（可选，默认512）"
+                },
+                "height": {
+                    "type": "integer",
+                    "description": "图片高度（可选，默认512）"
+                },
+                "steps": {
+                    "type": "integer",
+                    "description": "推理步数（可选，默认20，数值越高质量越好但速度越慢）"
+                },
+                "cfg_scale": {
+                    "type": "number",
+                    "description": "CFG 系数（可选，默认7，控制提示词的强度）"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "模型名称（可选，默认使用配置中的模型）"
+                }
+            },
+            "required": ["prompt"]
+        }
+    }
+}
