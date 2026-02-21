@@ -1,0 +1,137 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Data and Cache
+data/
+cache/
+tmp/
+temp/
+*.tmp
+*.cache
+*.db
+*.sqlite
+*.sqlite3
+
+# Configuration (sensitive)
+config.json
+config.env
+.env
+*.env
+secrets.json
+credentials.json
+
+# Token Usage
+token_usage.jsonl
+token_usage_archives/
+
+# Audio Files
+audio/
+*.wav
+*.mp3
+*.ogg
+*.flac
+
+# Images (user-generated)
+img/
+imgs/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+user_upload/
+
+# Temporary Files
+$null
+*.bak
+*.old
+test_*.py
+test_*.bat
+*_report.md
+*_修复报告.md
+*_配置报告.md
+*_验证报告.md
+
+# Build artifacts
+*.spec
+build/
+dist/
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Docker
+docker-compose.override.yml
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project Specific
+LifeBook/
+MiroFish/
+VCPChat/
+VCPToolBox/
+Undefined/
+references/
+archive/
+docs_archive/
+Fixlogs/
+reports/
+
+# Large files
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Database
+*.db
+*.sqlite
+neo4j/
+
+# MCP Server specific
+*.pid
+*.lock

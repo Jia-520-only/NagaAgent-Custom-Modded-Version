@@ -1,0 +1,260 @@
+{
+  "displayName": "包豆AI视觉自动化",
+  "name": "包豆AI视觉自动化",
+  "description": "通过MCP协议调用包豆AI的屏幕分析和鼠标键盘自动化能力",
+  "version": "1.0.0",
+  "author": "NagaAgent",
+  "agentType": "mcp",
+  "entryPoint": {
+    "module": "mcpserver.agent_baodou",
+    "class": "BaodouAIAgent"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "baodou_capture_screen",
+        "description": "截取当前屏幕，返回截图保存路径",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_capture_screen\"}"
+      },
+      {
+        "command": "baodou_analyze_task",
+        "description": "分析任务并生成执行计划，参数：task_description（任务描述）、max_iterations（最大迭代次数，可选）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_analyze_task\",\"task_description\":\"打开浏览器搜索鸣潮\"}"
+      },
+      {
+        "command": "baodou_get_status",
+        "description": "获取包豆AI状态信息",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_get_status\"}"
+      },
+      {
+        "command": "baodou_mouse_move",
+        "description": "移动鼠标到指定位置，参数：x（目标X坐标）、y（目标Y坐标）、duration（移动持续时间秒，可选）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_mouse_move\",\"x\":100,\"y\":200,\"duration\":0.1}"
+      },
+      {
+        "command": "baodou_mouse_click",
+        "description": "鼠标点击操作，参数：x（X坐标，可选）、y（Y坐标，可选）、button（按键类型left/right/middle，默认left）、clicks（点击次数，默认1）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_mouse_click\",\"x\":100,\"y\":200,\"button\":\"left\",\"clicks\":1}"
+      },
+      {
+        "command": "baodou_keyboard_type",
+        "description": "键盘输入文本，参数：text（要输入的文本）、interval（每个字符间隔秒，默认0.01）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_keyboard_type\",\"text\":\"你好\"}"
+      },
+      {
+        "command": "baodou_keyboard_press",
+        "description": "按下键盘按键，参数：key（按键名称如enter、ctrl+c、alt+f4）、presses（按压次数，默认1）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_keyboard_press\",\"key\":\"enter\"}"
+      },
+      {
+        "command": "baodou_launch_gui",
+        "description": "启动包豆AI独立GUI程序，用于完整的视觉自动化控制",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_launch_gui\"}"
+      },
+      {
+        "command": "baodou_send_task",
+        "description": "弥娅向包豆GUI发送任务并执行（统一交互界面），参数：task_description（任务描述）、wait_for_completion（是否等待完成，默认false）、timeout（超时时间秒，默认60）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_send_task\",\"task_description\":\"打开浏览器并搜索人工智能\",\"wait_for_completion\":true,\"timeout\":30}"
+      },
+      {
+        "command": "baodou_check_status",
+        "description": "检查包豆GUI运行状态",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"包豆AI视觉自动化\",\"tool_name\":\"baodou_check_status\"}"
+      }
+    ]
+  },
+  "tools": [
+    {
+      "name": "baodou_capture_screen",
+      "description": "截取当前屏幕",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "baodou_analyze_task",
+      "description": "分析任务并生成执行计划",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task_description": {
+            "type": "string",
+            "description": "任务描述"
+          },
+          "max_iterations": {
+            "type": "integer",
+            "description": "最大迭代次数(可选)"
+          }
+        },
+        "required": ["task_description"]
+      }
+    },
+    {
+      "name": "baodou_get_status",
+      "description": "获取包豆AI状态",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "baodou_mark_coordinates",
+      "description": "在屏幕截图上标记坐标点",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "coordinates": {
+            "type": "array",
+            "description": "坐标点列表,如 [{\"x\": 100, \"y\": 200}]",
+            "items": {
+              "type": "object",
+              "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"}
+              }
+            }
+          },
+          "image_path": {
+            "type": "string",
+            "description": "源图像路径(可选)"
+          }
+        },
+        "required": ["coordinates"]
+      }
+    },
+    {
+      "name": "baodou_mouse_move",
+      "description": "移动鼠标到指定位置",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "description": "目标X坐标"
+          },
+          "y": {
+            "type": "number",
+            "description": "目标Y坐标"
+          },
+          "duration": {
+            "type": "number",
+            "description": "移动持续时间(秒,可选)"
+          }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "name": "baodou_mouse_click",
+      "description": "鼠标点击操作",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "description": "X坐标(可选,不指定则点击当前位置)"
+          },
+          "y": {
+            "type": "number",
+            "description": "Y坐标(可选,不指定则点击当前位置)"
+          },
+          "button": {
+            "type": "string",
+            "description": "按键类型(left/right/middle)",
+            "default": "left"
+          },
+          "clicks": {
+            "type": "integer",
+            "description": "点击次数",
+            "default": 1
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "baodou_keyboard_type",
+      "description": "键盘输入文本",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "要输入的文本"
+          },
+          "interval": {
+            "type": "number",
+            "description": "每个字符之间的间隔(秒)",
+            "default": 0.01
+          }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "baodou_keyboard_press",
+      "description": "按下键盘按键",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "按键名称(如 'enter', 'ctrl+c', 'alt+f4')"
+          },
+          "presses": {
+            "type": "integer",
+            "description": "按压次数",
+            "default": 1
+          }
+        },
+        "required": ["key"]
+      }
+    },
+    {
+      "name": "baodou_launch_gui",
+      "description": "启动包豆AI独立GUI程序",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "baodou_send_task",
+      "description": "弥娅向包豆GUI发送任务并执行（统一交互界面）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task_description": {
+            "type": "string",
+            "description": "任务描述，例如\"打开浏览器并搜索人工智能\""
+          },
+          "wait_for_completion": {
+            "type": "boolean",
+            "description": "是否等待任务完成(默认false)",
+            "default": false
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "等待超时时间(秒，默认60)",
+            "default": 60
+          }
+        },
+        "required": ["task_description"]
+      }
+    },
+    {
+      "name": "baodou_check_status",
+      "description": "检查包豆GUI运行状态",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}
+
