@@ -8,9 +8,10 @@ import asyncio
 import uuid
 import logging
 import re
+import json
 import sys
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -45,9 +46,13 @@ def setup_logging():
 
 class MessageManager:
     """统一的消息管理器"""
-
+    
     def __init__(self):
         self.sessions: Dict[str, Dict] = {}
+        # 分析状态跟踪，防止重复执行
+        self.analysis_in_progress: Dict[str, bool] = {}
+        # 批量添加消息的临时缓冲，用于延迟截断
+        self.batch_add_buffer: Dict[str, int] = {}
         # 从配置文件读取最大历史轮数，默认为10轮
         try:
             from system.config import config
@@ -65,127 +70,127 @@ class MessageManager:
             self.log_dir = Path("logs")
             self.ai_name = "娜迦"
             logger.warning("无法导入配置，使用默认历史轮数设置")
-
-        # 会话持久化存储目录
-        self.sessions_dir = self.log_dir.parent / "sessions"
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-
-        # 启动时从磁盘加载所有会话
-        self._load_all_sessions_from_disk()
-
-    def _get_session_file(self, session_id: str) -> Path:
-        """获取会话文件路径"""
-        return self.sessions_dir / f"{session_id}.json"
-
-    def _save_session_to_disk(self, session_id: str):
-        """将单个会话保存到磁盘"""
-        session = self.sessions.get(session_id)
-        if not session:
-            return
-        try:
-            import json
-            data = {
-                "session_id": session_id,
-                "created_at": session["created_at"],
-                "last_activity": session["last_activity"],
-                "agent_type": session.get("agent_type", "default"),
-                "temporary": session.get("temporary", False),
-                "messages": session["messages"],
-                "compress": session.get("compress", ""),
-            }
-            self._get_session_file(session_id).write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except Exception as e:
-            logger.error(f"保存会话到磁盘失败 {session_id}: {e}")
-
-    def _load_all_sessions_from_disk(self):
-        """启动时从磁盘加载所有会话"""
-        import json
-        loaded = 0
-        for f in self.sessions_dir.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                sid = data.get("session_id") or f.stem
-                self.sessions[sid] = {
-                    "created_at": data.get("created_at", ""),
-                    "last_activity": data.get("last_activity", ""),
-                    "agent_type": data.get("agent_type", "default"),
-                    "temporary": data.get("temporary", False),
-                    "messages": data.get("messages", []),
-                    "compress": data.get("compress", ""),
-                }
-                loaded += 1
-            except Exception as e:
-                logger.warning(f"加载会话文件失败 {f.name}: {e}")
-        if loaded:
-            logger.info(f"从磁盘加载了 {loaded} 个历史会话")
-
-    def _delete_session_file(self, session_id: str):
-        """从磁盘删除会话文件"""
-        try:
-            p = self._get_session_file(session_id)
-            if p.exists():
-                p.unlink()
-        except Exception as e:
-            logger.error(f"删除会话文件失败 {session_id}: {e}")
     
     def generate_session_id(self) -> str:
         """生成唯一的会话ID"""
         return str(uuid.uuid4())
     
-    def create_session(self, session_id: Optional[str] = None, temporary: bool = False) -> str:
-        """获取或创建会话
-
-        Args:
-            session_id: 会话ID，为空时自动生成
-            temporary: 是否为临时会话（临时会话不持久化到磁盘，重启后消失）
-        """
+    def create_session(self, session_id: Optional[str] = None) -> str:
+        """获取或创建会话"""
         if not session_id:
             session_id = self.generate_session_id()
-
-        # 检查会话是否已存在（内存中）
+        
+        # 检查会话是否已存在
         if session_id in self.sessions:
             logger.debug(f"使用现有会话: {session_id}")
             # 更新最后活动时间
-            self.sessions[session_id]["last_activity"] = datetime.now().isoformat()
+            self.sessions[session_id]["last_activity"] = asyncio.get_event_loop().time()
             return session_id
-
-        # 初始化新会话（空消息列表，不注入历史）
+        
+        # 初始化新会话
         self.sessions[session_id] = {
-            "created_at": datetime.now().isoformat(),
+            "created_at": asyncio.get_event_loop().time(),
             "messages": [],
-            "agent_type": "default",
-            "last_activity": datetime.now().isoformat(),
-            "temporary": temporary,
+            "agent_type": "default",  # 可以扩展支持不同agent类型
+            "last_activity": asyncio.get_event_loop().time()
         }
-
-        logger.info(f"创建{'临时' if temporary else ''}会话: {session_id}")
+        
+        # 如果启用持久化上下文，尝试加载历史对话
+        if self.persistent_context:
+            self._load_persistent_context_for_session(session_id)
+        
+        logger.info(f"创建新会话: {session_id}")
         return session_id
+    
+    def _load_persistent_context_for_session(self, session_id: str):
+        """为指定会话加载持久化上下文"""
+        try:
+            # 加载历史对话
+            recent_messages = self.load_recent_context(
+                days=self.context_load_days,
+                max_messages=self.max_messages_per_session
+            )
+            
+            if recent_messages:
+                self.sessions[session_id]["messages"] = recent_messages
+                logger.info(f"会话 {session_id} 加载了 {len(recent_messages)} 条历史对话")
+            else:
+                logger.debug(f"会话 {session_id} 未找到历史对话记录")
+                
+        except Exception as e:
+            logger.warning(f"为会话 {session_id} 加载持久化上下文失败: {e}")
     
     def get_session(self, session_id: str) -> Optional[Dict]:
         """获取会话信息"""
         return self.sessions.get(session_id)
     
-    def add_message(self, session_id: str, role: str, content: str) -> bool:
-        """向会话添加消息"""
+    def add_message(self, session_id: str, role: str, content: str, skip_truncation: bool = False) -> bool:
+        """
+        向会话添加消息
+
+        Args:
+            session_id: 会话ID
+            role: 消息角色 (user/assistant)
+            content: 消息内容
+            skip_truncation: 是否跳过截断检查（用于批量添加时延迟截断）
+        """
         if session_id not in self.sessions:
             logger.warning(f"会话不存在: {session_id}")
             return False
 
         session = self.sessions[session_id]
+        old_count = len(session["messages"])
         session["messages"].append({"role": role, "content": content})
-        session["last_activity"] = datetime.now().isoformat()
+        session["last_activity"] = asyncio.get_event_loop().time()
+        new_count = len(session["messages"])
 
-        # 限制消息数量
-        if len(session["messages"]) > self.max_messages_per_session:
-            session["messages"] = session["messages"][-self.max_messages_per_session:]
+        # 记录批量添加计数
+        if not skip_truncation:
+            self.batch_add_buffer[session_id] = 0  # 重置批量计数
 
-        logger.debug(f"会话 {session_id} 添加消息: {role} - {content[:50]}...")
+        # 只有在非批量模式或者批量计数达到2时才进行截断
+        # 这样可以确保一整轮对话（用户+助手）都添加完成后再截断
+        if not skip_truncation and new_count > self.max_messages_per_session + 4:
+            # 使用更大的缓冲区，确保最新2轮对话（4条消息）在截断时保留
+            buffer_limit = self.max_messages_per_session + 4
+            session["messages"] = session["messages"][-buffer_limit:]
+            logger.info(f"会话 {session_id} 消息数 {old_count} -> {new_count} -> 截断为 {len(session['messages'])} (缓冲模式)")
+        else:
+            logger.debug(f"会话 {session_id} 消息数 {old_count} -> {new_count}")
 
-        # 临时会话不持久化到磁盘
-        if not session.get("temporary"):
-            self._save_session_to_disk(session_id)
+        logger.info(f"会话 {session_id} 添加消息: {role} - {content[:50]}... (当前共{len(session['messages'])}条)")
+        return True
+
+    def add_message_pair(self, session_id: str, user_message: str, assistant_message: str) -> bool:
+        """
+        批量添加一对消息（用户+助手），避免中间截断
+
+        Args:
+            session_id: 会话ID
+            user_message: 用户消息
+            assistant_message: 助手消息
+        """
+        if session_id not in self.sessions:
+            logger.warning(f"会话不存在: {session_id}")
+            return False
+
+        session = self.sessions[session_id]
+        old_count = len(session["messages"])
+
+        # 先添加两条消息，不进行截断
+        session["messages"].append({"role": "user", "content": user_message})
+        session["messages"].append({"role": "assistant", "content": assistant_message})
+        new_count = len(session["messages"])
+        session["last_activity"] = asyncio.get_event_loop().time()
+
+        # 然后进行一次性截断
+        if new_count > self.max_messages_per_session + 4:
+            session["messages"] = session["messages"][-(self.max_messages_per_session + 4):]
+            logger.info(f"会话 {session_id} 批量添加: {old_count} -> {new_count} -> 截断为 {len(session['messages'])} (批量模式)")
+        else:
+            logger.debug(f"会话 {session_id} 批量添加: {old_count} -> {new_count}")
+
+        logger.info(f"会话 {session_id} 批量添加2条消息: 用户({user_message[:30]}...) + 助手({assistant_message[:30]}...) (当前共{len(session['messages'])}条)")
         return True
     
     def get_messages(self, session_id: str) -> List[Dict]:
@@ -200,79 +205,38 @@ class MessageManager:
         messages = self.get_messages(session_id)
         return messages[-count:] if messages else []
     
-    def _get_previous_session_messages(self, current_session_id: str, max_messages: int = 20) -> List[Dict]:
-        """获取上一个会话的最近消息（按最后活动时间排序，排除当前会话）"""
-        candidates = [
-            (sid, s) for sid, s in self.sessions.items()
-            if sid != current_session_id and s.get("messages")
-        ]
-        if not candidates:
-            return []
-        # 按最后活动时间倒序，取最近的一个会话
-        candidates.sort(key=lambda x: x[1].get("last_activity", ""), reverse=True)
-        prev_messages = candidates[0][1]["messages"]
-        return prev_messages[-max_messages:]
-
-    def _get_previous_session_id(self, current_session_id: str) -> Optional[str]:
-        """获取上一个会话的 ID（按最后活动时间排序，排除当前会话）"""
-        candidates = [
-            (sid, s) for sid, s in self.sessions.items()
-            if sid != current_session_id and s.get("messages")
-        ]
-        if not candidates:
-            return None
-        candidates.sort(key=lambda x: x[1].get("last_activity", ""), reverse=True)
-        return candidates[0][0]
-
-    def get_session_compress(self, session_id: str) -> str:
-        """获取会话的压缩摘要"""
-        session = self.sessions.get(session_id)
-        return (session.get("compress", "") if session else "") or ""
-
-    def set_session_compress(self, session_id: str, compress: str):
-        """设置会话的压缩摘要并持久化"""
-        session = self.sessions.get(session_id)
-        if not session:
-            return
-        session["compress"] = compress
-        if not session.get("temporary"):
-            self._save_session_to_disk(session_id)
-
     def build_conversation_messages(self, session_id: str, system_prompt: str,
-                                  current_message: str, include_history: bool = True) -> List[Dict]:
-        """构建完整的对话消息列表
-
-        会话自身的消息作为主要上下文；
-        若启用 persistent_context 且本会话消息较少，则从上一个会话
-        取最近的消息作为背景注入 LLM 上下文（不写入当前会话存储）。
-        """
+                                  current_message: str, include_history: bool = True,
+                                  chat_context: dict = None) -> List[Dict]:
+        """构建完整的对话消息列表"""
         messages = []
 
-        # 添加系统提示词（时间信息已由 build_system_prompt() 统一注入）
-        messages.append({"role": "system", "content": system_prompt})
+        # 添加当前时间信息到系统提示词
+        from datetime import datetime
+        current_time = datetime.now()
+        time_info = f"\n\n【当前时间信息】\n当前日期：{current_time.strftime('%Y年%m月%d日')}\n当前时间：{current_time.strftime('%H:%M:%S')}\n当前星期：{current_time.strftime('%A')}\n"
+        enhanced_system_prompt = system_prompt + time_info
 
-        # 获取本会话的消息（过滤 info 标记，不计入 LLM 上下文）
-        session_messages = self.get_recent_messages(session_id) if include_history else []
-        session_messages = [m for m in session_messages if m.get("role") != "info"]
+        # 添加聊天上下文（群聊/私聊）
+        if chat_context:
+            context_info = ""
+            if chat_context.get("is_group_chat"):
+                platform = chat_context.get("platform", "未知")
+                group_id = chat_context.get("group_id", "未知")
+                sender_id = chat_context.get("sender_id", "未知")
+                context_info = f"\n\n【重要：当前聊天环境】\n⚠️ 当前对话：群聊（{platform}平台）\n⚠️ 群组ID：{group_id}\n⚠️ 发送者ID：{sender_id}\n⚠️ 注意：这是在群聊中的对话，你的回复应该考虑到其他群成员的存在，避免过于私密的称呼和表达。\n⚠️ 不要说\"当前是私聊环境\"或\"只有我们两个人\"，因为这是群聊环境！"
+            else:
+                platform = chat_context.get("platform", "未知")
+                context_info = f"\n\n【重要：当前聊天环境】\n⚠️ 当前对话：私聊（{platform}平台）\n⚠️ 注意：这是与创造者的私密对话，可以更加亲近和私密。"
+            enhanced_system_prompt += context_info
 
-        # 启用持久化上下文时，从上一个会话取最近消息作为背景注入
-        # 如果 system_prompt 中已包含 <compress> 压缩摘要，或上一个会话末尾
-        # 已有【已压缩上下文】标记（说明该会话曾经被压缩过），则跳过原始消息注入
-        if self.persistent_context and "<compress>" not in system_prompt:
-            prev_messages = self._get_previous_session_messages(session_id)
-            # 检查上一个会话的最后一条消息是否为压缩标记
-            prev_was_compressed = (
-                prev_messages and prev_messages[-1].get("role") == "info"
-                and "【已压缩上下文】" in prev_messages[-1].get("content", "")
-            )
-            if prev_messages and not prev_was_compressed:
-                # 过滤 info 标记
-                prev_messages = [m for m in prev_messages if m.get("role") != "info"]
-                messages.extend(prev_messages)
-                logger.debug(f"为会话 {session_id} 注入上一会话的 {len(prev_messages)} 条消息到 LLM 上下文")
+        # 添加系统提示词
+        messages.append({"role": "system", "content": enhanced_system_prompt})
 
-        # 添加本会话的对话记录
-        messages.extend(session_messages)
+        # 添加历史对话
+        if include_history:
+            recent_messages = self.get_recent_messages(session_id)
+            messages.extend(recent_messages)
 
         # 添加当前用户消息
         messages.append({"role": "user", "content": current_message})
@@ -294,10 +258,16 @@ class MessageManager:
             List[Dict]: 完整的对话消息列表
         """
         messages = []
-
-        # 添加系统提示词（时间信息已由 build_system_prompt() 统一注入）
-        messages.append({"role": "system", "content": system_prompt})
-
+        
+        # 添加当前时间信息到系统提示词
+        from datetime import datetime
+        current_time = datetime.now()
+        time_info = f"\n\n【当前时间信息】\n当前日期：{current_time.strftime('%Y年%m月%d日')}\n当前时间：{current_time.strftime('%H:%M:%S')}\n当前星期：{current_time.strftime('%A')}\n"
+        enhanced_system_prompt = system_prompt + time_info
+        
+        # 添加系统提示词
+        messages.append({"role": "system", "content": enhanced_system_prompt})
+        
         # 计算最大消息数量
         if max_history_rounds is None:
             max_history_rounds = self.max_history_rounds
@@ -323,30 +293,25 @@ class MessageManager:
         return {
             "session_id": session_id,
             "created_at": session["created_at"],
-            "last_active_at": session["last_activity"],
+            "last_activity": session["last_activity"],
             "message_count": len(session["messages"]),
             "conversation_rounds": len(session["messages"]) // 2,
             "agent_type": session["agent_type"],
-            "max_history_rounds": self.max_history_rounds,
-            "temporary": session.get("temporary", False),
+            "max_history_rounds": self.max_history_rounds,  # 添加最大历史轮数信息
             "last_message": session["messages"][-1]["content"][:100] + "..." if session["messages"] else "无对话历史"
         }
     
-    def get_all_sessions_info(self) -> List[Dict]:
-        """获取所有会话信息（返回列表，按最近活跃时间倒序排列）"""
-        sessions_list = []
-        for session_id in self.sessions:
-            info = self.get_session_info(session_id)
-            if info:
-                sessions_list.append(info)
-        sessions_list.sort(key=lambda s: s.get("last_active_at", ""), reverse=True)
-        return sessions_list
+    def get_all_sessions_info(self) -> Dict[str, Dict]:
+        """获取所有会话信息"""
+        sessions_info = {}
+        for session_id, session in self.sessions.items():
+            sessions_info[session_id] = self.get_session_info(session_id)
+        return sessions_info
     
     def delete_session(self, session_id: str) -> bool:
         """删除指定会话"""
         if session_id in self.sessions:
             del self.sessions[session_id]
-            self._delete_session_file(session_id)
             logger.info(f"删除会话: {session_id}")
             return True
         return False
@@ -354,34 +319,25 @@ class MessageManager:
     def clear_all_sessions(self) -> int:
         """清空所有会话"""
         count = len(self.sessions)
-        # 删除磁盘文件
-        for session_id in list(self.sessions.keys()):
-            self._delete_session_file(session_id)
         self.sessions.clear()
         logger.info(f"清空所有会话，共 {count} 个")
         return count
     
     def cleanup_old_sessions(self, max_age_hours: int = 24) -> int:
         """清理过期会话"""
-        now = datetime.now()
-        max_age = timedelta(hours=max_age_hours)
+        current_time = asyncio.get_event_loop().time()
         expired_sessions = []
-
+        
         for session_id, session in self.sessions.items():
-            try:
-                last_active = datetime.fromisoformat(session["last_activity"])
-                if now - last_active > max_age:
-                    expired_sessions.append(session_id)
-            except (ValueError, KeyError):
+            if current_time - session["last_activity"] > max_age_hours * 3600:
                 expired_sessions.append(session_id)
-
+        
         for session_id in expired_sessions:
             del self.sessions[session_id]
-            self._delete_session_file(session_id)
-
+        
         if expired_sessions:
             logger.info(f"清理了 {len(expired_sessions)} 个过期会话")
-
+        
         return len(expired_sessions)
     
     def set_agent_type(self, session_id: str, agent_type: str) -> bool:
@@ -664,18 +620,8 @@ class MessageManager:
     def save_conversation_and_logs(self, session_id: str, user_message: str, assistant_response: str):
         """统一保存对话历史与日志 - 整合重复逻辑"""
         try:
-            # 保存对话历史到消息管理器（临时会话的 add_message 内部已跳过磁盘持久化）
-            self.add_message(session_id, "user", user_message)
-            # 空响应不保存到会话历史，避免 LLM 在后续对话中模仿空回复模式
-            if assistant_response and assistant_response.strip():
-                self.add_message(session_id, "assistant", assistant_response)
-            else:
-                logger.warning(f"会话 {session_id}: assistant 响应为空，跳过保存到会话历史")
-
-            # 临时会话不保存日志文件，也不触发记忆提取
-            session = self.sessions.get(session_id)
-            if session and session.get("temporary"):
-                return
+            # 保存对话历史到消息管理器（使用批量添加避免中间截断）
+            self.add_message_pair(session_id, user_message, assistant_response)
 
             # 保存对话日志到文件
             self.save_conversation_log(
@@ -686,26 +632,55 @@ class MessageManager:
 
             # 触发五元组自动提取（如果记忆系统已启用）
             try:
-                # 优先使用远程 NagaMemory 服务
-                from summer_memory.memory_client import get_remote_memory_client
-                remote = get_remote_memory_client()
-                if remote is not None:
+                from summer_memory.memory_manager import memory_manager
+                if memory_manager and memory_manager.enabled and memory_manager.auto_extract:
                     import asyncio
-                    asyncio.create_task(remote.add_memory(user_message, assistant_response))
-                    logger.info(f"已提交远程记忆提取任务: {user_message[:50]}...")
-                else:
-                    # 回退到本地 summer_memory
-                    from summer_memory.memory_manager import memory_manager
-                    if memory_manager and memory_manager.enabled and memory_manager.auto_extract:
-                        import asyncio
-                        asyncio.create_task(memory_manager.add_conversation_memory(user_message, assistant_response))
-                        logger.info(f"已提交五元组提取任务: {user_message[:50]}...")
+                    # 异步调用记忆管理器添加对话记忆
+                    asyncio.create_task(memory_manager.add_conversation_memory(user_message, assistant_response))
+                    logger.info(f"已提交五元组提取任务: {user_message[:50]}...")
             except ImportError as e:
                 logger.warning(f"记忆系统未启用或导入失败: {e}")
         except Exception as e:
             logger.error(f"保存对话与日志失败: {e}")
     
+    def trigger_background_analysis(self, session_id: str):
+        """统一触发后台意图分析 - 整合重复逻辑"""
+        try:
+            # 检查是否已经有分析在进行中
+            if self.analysis_in_progress.get(session_id):
+                logger.info(f"[博弈论] 会话 {session_id} 已有意图分析在进行中，跳过重复触发")
+                return
 
+            # 标记分析开始
+            self.analysis_in_progress[session_id] = True
+
+            import asyncio
+            from system.background_analyzer import get_background_analyzer
+            from system.config import config
+            background_analyzer = get_background_analyzer()
+
+            # 根据配置获取意图分析轮数，默认使用max_history_rounds
+            intent_rounds = getattr(config.api, 'intent_analysis_rounds', config.api.max_history_rounds)
+            max_messages = intent_rounds * 2  # 每轮包含用户和助手各一条消息
+
+            recent_messages = self.get_recent_messages(session_id, count=max_messages)
+            logger.info(f"[博弈论] 分析最近 {intent_rounds} 轮对话，共 {len(recent_messages)} 条消息")
+
+            # 异步执行分析任务
+            async def _execute_analysis():
+                try:
+                    await background_analyzer.analyze_intent_async(recent_messages, session_id)
+                finally:
+                    # 无论成功与否，都清除分析状态
+                    self.analysis_in_progress[session_id] = False
+                    logger.info(f"[博弈论] 会话 {session_id} 意图分析完成，状态已清除")
+
+            asyncio.create_task(_execute_analysis())
+        except Exception as e:
+            # 发生异常时也要清除分析状态
+            self.analysis_in_progress[session_id] = False
+            logger.error(f"后台意图分析触发失败: {e}")
+    
     def get_all_sessions_api(self):
         """获取所有会话信息 - API接口"""
         try:

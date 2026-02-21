@@ -1,441 +1,176 @@
-<div align="center">
-
-# NagaAgent
-
-**Four-Service AI Desktop Assistant — Streaming Tool Calls · Knowledge Graph Memory · Live2D · Voice**
+# NagaAgent Modified Version
 
 [简体中文](README.md) | [繁體中文](README_tw.md) | [English](README_en.md)
 
-![NagaAgent](https://img.shields.io/badge/NagaAgent-5.0.0-blue?style=for-the-badge&logo=python&logoColor=white)
+![NagaAgent](https://img.shields.io/badge/NagaAgent-4.1--Modified-purple?style=for-the-badge&logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-green?style=for-the-badge)
-![License](https://img.shields.io/badge/License-AGPL%203.0%20%7C%20Proprietary-yellow?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.11-blue?style=for-the-badge&logo=python)
+![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 
-[![Stars](https://img.shields.io/github/stars/Xxiii8322766509/NagaAgent?style=social)](https://github.com/Xxiii8322766509/NagaAgent)
-[![Forks](https://img.shields.io/github/forks/Xxiii8322766509/NagaAgent?style=social)](https://github.com/Xxiii8322766509/NagaAgent)
-[![Issues](https://img.shields.io/github/issues/Xxiii8322766509/NagaAgent)](https://github.com/Xxiii8322766509/NagaAgent/issues)
-
-**[QQ Bot Integration: Undefined QQbot](https://github.com/69gg/Undefined/)**
-
-
-</div>
+![UI Preview](ui/img/README.jpg)
 
 ---
 
-**Dual licensed** · [AGPL-3.0](LICENSE) for open source | [Proprietary](LICENSE-CLOSED-SOURCE) for closed-source use (written consent required). Commercial: contact@nagaagent.com
+## 📌 Project Overview
+
+**NagaAgent Modified Version** is a modified version based on the [original NagaAgent](https://github.com/Xxiii8322766509/NagaAgent), focusing on fixing critical issues in QQ/WeChat integration and adding various performance optimizations and feature enhancements.
 
 ---
 
-## Overview
+## 🎯 Key Improvements
 
-NagaAgent consists of four independent microservices:
+### 🔧 Critical Bug Fixes
 
-| Service | Port | Responsibilities |
-|---------|------|-----------------|
-| **API Server** | 8000 | Chat, streaming tool calls, document upload, auth proxy, memory API, config management |
-| **Agent Server** | 8001 | Background intent analysis, OpenClaw integration, task scheduling with compressed memory |
-| **MCP Server** | 8003 | MCP tool registration / discovery / parallel dispatch |
-| **Voice Service** | 5048 | TTS (Edge-TTS) + ASR (FunASR) + Realtime voice (Qwen Omni) |
+- ✅ **Fixed PC duplicate output** - Resolved UI message duplication through task deduplication cache
+- ✅ **Fixed QQ image recognition not following persona** - Ensures image recognition responses match character settings
+- ✅ **Fixed message format not responding to commands** - Supports correct text/voice/both mode responses based on commands
+- ✅ **Fixed incomplete long text output** - Implemented intelligent segmentation to avoid content truncation
+- ✅ **Fixed long text not sending in multiple messages** - Automatic segmented sending to avoid QQ message length limits
+- ✅ **Fixed MCP tool parameter mapping error** - Supports multiple parameter sources (param_name → command/app)
 
-`main.py` orchestrates all services as daemon threads. Frontend options: Electron + Vue 3 desktop or PyQt5 native GUI.
+### 🚀 New Features
 
----
+- 📝 **Automatic long text segmentation** - 500 chars/segment with semantic integrity (minimum 100 chars)
+- 🎙️ **Automatic long voice segmentation** - 200 chars/segment with intelligent semantic splitting (minimum 50 chars)
+- 🧠 **Intelligent Semantic Analyzer** - Automatically determines if tool calling is needed, adjusts output length and style
+- 🔀 **Reply mode switching** - Supports text-only / voice-only / combined modes
 
-## Updates
+### ⚡ Performance Optimizations
 
-| Date | Changes |
-|------|---------|
-| **2026-02-16** | 5.0.0 release: NagaModel gateway unified access (TTS/Embeddings/WebSearch), DeepSeek reasoning process real-time display, Mind Sea UI adaptive fix, BoxContainer noScroll mode |
-| **2026-02-15** | Unified knowledge block injection + history pollution fix, LLM streaming retry, config hot-reload fix, skill workshop loading optimization, config.json write truncation fix, 7-day auto-login + auto-start on boot |
-| **2026-02-14** | Remote memory service (NagaMemory cloud + local GRAG fallback), Mind Sea 3D rewrite, splash title animation with particles, progress bar stall detection & health polling, version update dialog, user agreement |
-| **2026-02-13** | Floating ball mode (4-state animation), screenshot multimodal vision auto-switch, skill workshop refactor + Live2D emotion channel independent, login/registration flow improvements |
-| **2026-02-12** | NagaCAS authentication + NagaModel gateway routing, Live2D 4-channel orthogonal animation, Agentic Tool Loop, Arknights-style splash screen, game guide MCP integration |
-| **2026-02-11** | Embedded OpenClaw packaging, auto-generate config from template on startup |
-| **2026-02-10** | Backend packaging optimization, skill workshop MCP status fix, terminal settings blank page fix, remove redundant Agent/MCP keeping only OpenClaw dispatch |
-| **2026-02-09** | Frontend refactor, Live2D eye tracking disable, OpenClaw renamed to AgentServer |
+- 📊 MCP callback timeout: 5s → 30s to prevent LLM generation timeout
+- 📊 Task deduplication cache to avoid duplicate UI displays
+- 📊 Optimized callback retry mechanism for improved stability
 
 ---
 
-## Core Modules
+## 🛠️ Technical Architecture
 
-### Streaming Tool Call Loop
-
-NagaAgent's tool calling does not rely on OpenAI's Function Calling API. Instead, the LLM embeds tool calls as JSON inside ` ```tool``` ` code blocks in its text output. This means **any OpenAI-compatible LLM provider works out of the box** — no function calling support required from the model.
-
-**Single-round flow**:
+### System Architecture
 
 ```
-LLM streaming output ──SSE──▶ Frontend displays text in real-time
-       │                              │
-       ▼                              ▼
-  Accumulate full text          TTS sentence splitting
-       │
-       ▼
-parse_tool_calls_from_text()
-  ├─ Phase 1: Extract JSON from ```tool``` code blocks
-  └─ Phase 2: Fallback to bare JSON extraction (backward compat)
-       │
-       ▼
-  Classify by agentType
-  ├─ "mcp"      → MCPManager.unified_call() (in-process)
-  ├─ "openclaw"  → HTTP POST → Agent Server /openclaw/send
-  └─ "live2d"   → asyncio.create_task() → UI notification
-       │
-       ▼
-  asyncio.gather() parallel execution
-       │
-       ▼
-  Inject tool results into messages, start next LLM round
+┌─────────────────────────────────────────────────────────────┐
+│                  User Interface Layer (UI)                   │
+│  PyQt5 GUI  |  Live2D Avatar  |  System Tray  |  Chat UI     │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                  Core Services Layer                         │
+│  API :8000  |  Agent :8001  |  MCP :8003  |  TTS :5048     │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                  Business Logic Layer                        │
+│  Game Theory  |  GRAG Memory  |  Voice Processing  |  Tools  │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                  Data Storage Layer                          │
+│  Neo4j Graph DB  |  File System  |  Memory Cache             │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                  External Services Layer                     │
+│  LLM Providers  |  QQ/WeChat  |  MQTT  |  Web Crawler        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation details**:
+### Core Tech Stack
 
-- **Text parsing**: Regex `r"```tool\s*\n([\s\S]*?)(?:```|\Z)"` extracts code blocks, `json5` for tolerant parsing (fallback to `json`), fullwidth characters (`｛｝：`) auto-normalized
-- **Loop control**: Max 5 rounds (`max_loop_stream` configurable), terminates when no `agentType` JSON found in LLM output
-- **SSE encoding**: Each chunk is `data: {"type":"content"|"reasoning","text":"..."}\n\n`, frontend splits via `ReadableStream` + `TextDecoder`
-- **Result injection**: Formatted as `[Tool Result 1/N - service: tool (status)]` and appended to messages
-
-Source: [`apiserver/agentic_tool_loop.py`](apiserver/agentic_tool_loop.py), [`apiserver/streaming_tool_extractor.py`](apiserver/streaming_tool_extractor.py)
+- **Python 3.11** + PyQt5 + FastAPI
+- **Neo4j Graph Database** + GRAG Knowledge Graph
+- **MCP (Model Context Protocol)** for Tool Calling
+- **OpenAI-Compatible API** + Support for multiple LLM providers
+- **NapCat** - QQ Bot Framework
+- **GPT-SoVITS** - TTS Voice Synthesis Engine
 
 ---
 
-### GRAG Knowledge Graph Memory
+## 📦 Quick Start
 
-GRAG (Graph-RAG) automatically extracts quintuples `(subject, subject_type, predicate, object, object_type)` from conversations, stores them in Neo4j, and retrieves relevant memories as LLM context during chat.
+### System Requirements
 
-**Extraction pipeline**:
+- Python 3.11
+- Optional: `uv` tool (for faster dependency installation)
 
-1. **Structured output** (preferred): Calls `beta.chat.completions.parse()` with Pydantic model `QuintupleResponse`, `temperature=0.3`, up to 3 retries
-2. **JSON fallback**: Prompts LLM to return a JSON array; on parse failure, extracts content between the first `[` and last `]`
-3. **Filtering rules**: Only factual information (behaviors, entity relations, states, preferences); filters metaphors, hypotheticals, emotions, chitchat
-4. **Entity types**: person / location / organization / item / concept / time / event / activity
+### 1. Install Dependencies
 
-**Task manager**:
-
-- 3 asyncio worker coroutines consuming from `asyncio.Queue(maxsize=100)`
-- SHA-256 deduplication: identical text with PENDING/RUNNING tasks is skipped
-- Hourly auto-cleanup of tasks older than 24h
-- Configurable timeout (default 12s) and retry count (default 2)
-
-**Dual storage**:
-
-- Local file `logs/knowledge_graph/quintuples.json` (JSON array, set-based dedup)
-- Neo4j graph: `Entity` nodes + typed `Relationship` edges, `graph.merge()` upsert
-
-**RAG retrieval**:
-
-1. Extract keywords from user question (LLM-generated)
-2. Cypher query: `MATCH (e1:Entity)-[r]->(e2:Entity) WHERE e1.name CONTAINS '{kw}' ... LIMIT 5`
-3. Format as `subject(type) —[predicate]→ object(type)` and inject into LLM context
-
-**Remote memory** (new in 5.0.0):
-
-- `summer_memory/memory_client.py` interfaces with NagaMemory cloud service
-- Logged-in users automatically use cloud storage; falls back to local GRAG on logout or offline
-- API Server adds `/api/memory/*` proxy endpoints for frontend access
-
-Source: [`summer_memory/`](summer_memory/)
-
----
-
-### MCP Tool System
-
-A pluggable tool architecture based on the [Model Context Protocol](https://modelcontextprotocol.io/), with each tool running as an independent agent.
-
-**Built-in agents**:
-
-| Agent | Directory | Function |
-|-------|-----------|----------|
-| `weather_time` | `mcpserver/agent_weather_time/` | Weather queries/forecasts, system time, auto city/IP detection |
-| `open_launcher` | `mcpserver/agent_open_launcher/` | Scan installed apps, launch programs via natural language |
-| `game_guide` | `mcpserver/agent_game_guide/` | Game strategy Q&A, damage calculation, team building, auto-screenshot injection |
-| `online_search` | `mcpserver/agent_online_search/` | Web search via SearXNG |
-| `crawl4ai` | `mcpserver/agent_crawl4ai/` | Web content extraction via Crawl4AI |
-| `playwright_master` | `mcpserver/agent_playwright_master/` | Browser automation via Playwright |
-| `vision` | `mcpserver/agent_vision/` | Screenshot analysis and visual Q&A |
-| `mqtt_tool` | `mcpserver/agent_mqtt_tool/` | IoT device control via MQTT |
-| `office_doc` | `mcpserver/agent_office_doc/` | docx/xlsx content extraction |
-
-**Registration & discovery**:
-
-```
-mcpserver/
-├── agent_weather_time/
-│   ├── agent-manifest.json    ← Declares name, entryPoint.module/class, capabilities
-│   └── weather_time_agent.py
-├── agent_online_search/
-│   ├── agent-manifest.json
-│   └── ...
-└── mcp_registry.py            ← scan_and_register_mcp_agents() globs **/agent-manifest.json
-                                   importlib.import_module(module).ClassName() dynamic instantiation
-```
-
-- `MCPManager.unified_call(service_name, tool_call)` routes to the agent's `handle_handoff()`
-- MCP Server `POST /schedule` supports batch calls via `asyncio.gather()` for parallel execution
-- **Skill Market**: Frontend skill workshop supports one-click installation of community skills (Agent Browser, Brainstorming, Context7, Firecrawl Search, etc.), backend `GET /openclaw/market/items` + `POST /openclaw/market/items/{id}/install`
-
-Source: [`mcpserver/`](mcpserver/)
-
----
-
-### Electron Desktop
-
-Built with Electron + Vue 3 + Vite + UnoCSS + PrimeVue.
-
-#### Live2D Rendering & Animation
-
-Uses **pixi-live2d-display** + **PixiJS WebGL** to render Cubism Live2D models. SSAA super-sampling: Canvas rendered at `width * ssaa`, CSS `transform: scale(1/ssaa)` for sharper output.
-
-**4-channel orthogonal animation system** (`live2dController.ts`):
-
-| Channel | Description | Parameters |
-|---------|-------------|------------|
-| **Body State** | Keyframe loop animation (idle/thinking/talking), hermite-smooth interpolation | Loaded from `naga-actions.json` |
-| **Actions** | Queue-based head actions (nod/shake), FIFO single execution | AngleX/Y, EyeBallX/Y |
-| **Emotions** | `.exp3.json` expression files, three blend modes (Add/Multiply/Overwrite) | Exponential decay transitions |
-| **Tracking** | Pointer-following gaze, configurable start delay (`tracking_hold_delay_ms`) | Angle ±30, EyeBall ±1, BodyAngle ±10 |
-
-Merge order: body state → mouth → actions → manual override → emotion blend → tracking blend.
-
-#### Mind Sea Visualization (MindView)
-
-Canvas 2D with hand-rolled 3D projection (not WebGL/SVG). Spherical coordinate camera `(theta, phi, distance)`, perspective division `700 / depth`.
-
-**7-layer rendering**: Background gradient → floor grid → water surface → volumetric light (3 god rays) → particle system (3 layers, 125 particles) → bioluminescent plankton (10 with trails) → knowledge graph nodes and edges (depth-sorted painter's algorithm).
-
-Quintuple-to-graph mapping: `subject`/`object` → nodes, `predicate` → directed edges, degree centrality → node height weight (high-degree nodes float higher), 100-node limit.
-
-Interactions: click-drag to orbit, middle/shift-drag to pan, scroll to zoom, node drag/select, keyword search, touch gestures.
-
-#### Floating Ball Mode
-
-4-state animated window system: `classic` (normal) → `ball` (100×100 circle) → `compact` (420×100 collapsed) → `full` (420×N expanded).
-
-easeOutCubic easing (`1 - (1 - t)^3`), 160ms / 60FPS transitions. Smart positioning: expands rightward from ball position, auto-clamps to screen bounds.
-
-#### Splash Animation
-
-1. **Title phase**: Black overlay + 40 golden rising particles + title image 2.4s CSS keyframe (fade in → hold → fade out)
-2. **Progress phase**: Neural network particle background + Live2D cutout frame + gold progress bar (`requestAnimationFrame` interpolation, minimum speed 0.5 floor)
-3. **Stall detection**: 3 seconds with no progress change shows restart hint, health polling every 1s after 25% to prevent signal loss
-4. **Awaken**: Progress 100% shows pulsing "Click to Awaken" prompt
-
-Source: [`frontend/`](frontend/)
-
----
-
-### Voice Interaction
-
-**TTS (Text-to-Speech)**:
-
-- Edge-TTS engine, OpenAI-compatible endpoint `/v1/audio/speech`
-- 3-thread pipeline: sentence queue → TTS API calls (Semaphore(2) concurrency) → pygame playback
-- Live2D lip sync: `AdvancedLipSyncEngineV2` at 60FPS extracting 5 parameters (mouth_open / mouth_form / mouth_smile / eye_brow_up / eye_wide)
-- Supports mp3 / aac / wav / opus / flac, optional FFmpeg transcoding
-
-**ASR (Speech Recognition)**:
-
-- FunASR local server with VAD endpoint detection and WebSocket real-time streaming
-- Three-mode auto-switch: LOCAL (FunASR) → END_TO_END (Qwen Omni) → HYBRID (Qwen ASR + API Server)
-
-**Realtime Voice Chat** (requires DashScope API Key):
-
-- Full-duplex WebSocket voice interaction via Qwen Omni
-- Echo suppression, VAD detection, audio chunking (200ms), session cooldown, max speech duration control
-
-Source: [`voice/`](voice/)
-
----
-
-### Agent Server & Task Scheduling
-
-**OpenClaw Integration**:
-
-- Connects to OpenClaw Gateway (port 18789) to dispatch AI coding assistants for computer tasks via natural language
-- Three-tier fallback: packaged binary → global `openclaw` command → auto `npm install -g openclaw`
-- `POST /openclaw/send` sends instructions, waits up to 120 seconds
-
-**Task Scheduler** (`TaskScheduler`):
-
-- Task step recording (purpose / content / output / analysis / success status)
-- Auto-extraction of key facts and "key findings" / "important" markers
-- Memory compression: when steps exceed threshold, LLM generates `CompressedMemory` (key_findings / failed_attempts / current_status / next_steps), keeping only the last N steps
-- `schedule_parallel_execution()` via `asyncio.gather()` for parallel task execution
-
-Source: [`agentserver/`](agentserver/)
-
----
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                 Electron / PyQt5 Frontend                 │
-│  Vue 3 + Vite + UnoCSS + PrimeVue + pixi-live2d-display  │
-└────────────┬────────────┬────────────┬───────────────────┘
-             │            │            │
-     ┌───────▼──────┐ ┌──▼──────┐ ┌──▼──────┐
-     │  API Server  │ │ Agent   │ │  Voice  │
-     │   :8000      │ │ Server  │ │ Service │
-     │              │ │  :8001  │ │  :5048  │
-     │ - Chat/SSE   │ │         │ │         │
-     │ - Tool calls │ │ - Intent│ │ - TTS   │
-     │ - Documents  │ │   analysis│ │ - ASR │
-     │ - Auth proxy │ │ - Task  │ │ - Real  │
-     │ - Memory API │ │   sched │ │   time  │
-     │ - Skill Mkt  │ │ - Open  │ │         │
-     │ - Config     │ │   Claw  │ │         │
-     └──────┬───────┘ └────┬────┘ └─────────┘
-            │              │
-     ┌──────▼──────┐  ┌───▼──────────┐
-     │ MCP Server  │  │   OpenClaw   │
-     │   :8003     │  │   Gateway    │
-     │             │  │   :18789     │
-     │ - Registry  │  └──────────────┘
-     │ - Discovery │
-     │ - Parallel  │
-     └──────┬──────┘
-            │
-    ┌───────┴──────────────────────┐
-    │   MCP Agents (pluggable)     │
-    │ Weather | Search | Crawl     │
-    │ Launcher | Guide | MQTT ...  │
-    └──────────────────────────────┘
-            │
-     ┌──────▼──────┐
-     │   Neo4j     │
-     │   :7687     │
-     │  Knowledge  │
-     │   Graph     │
-     └─────────────┘
-```
-
-### Directory Structure
-
-```
-NagaAgent/
-├── apiserver/            # API Server — chat, streaming tool calls, auth, config
-│   ├── api_server.py     #   FastAPI main app
-│   ├── agentic_tool_loop.py  #   Multi-round tool call loop
-│   ├── llm_service.py    #   LiteLLM unified LLM interface
-│   └── streaming_tool_extractor.py  #   Streaming sentence split + TTS dispatch
-├── agentserver/          # Agent Server — intent analysis, task scheduling, OpenClaw
-│   ├── agent_server.py   #   FastAPI main app
-│   └── task_scheduler.py #   Task orchestration + compressed memory
-├── mcpserver/            # MCP Server — tool registration & dispatch
-│   ├── mcp_server.py     #   FastAPI main app
-│   ├── mcp_registry.py   #   Manifest scanning + dynamic registration
-│   ├── mcp_manager.py    #   unified_call() routing
-│   ├── agent_weather_time/
-│   ├── agent_open_launcher/
-│   ├── agent_game_guide/
-│   ├── agent_online_search/
-│   ├── agent_crawl4ai/
-│   ├── agent_playwright_master/
-│   ├── agent_vision/
-│   ├── agent_mqtt_tool/
-│   └── agent_office_doc/
-├── summer_memory/        # GRAG knowledge graph
-│   ├── quintuple_extractor.py  #   Quintuple extraction (structured output + JSON fallback)
-│   ├── quintuple_graph.py      #   Neo4j + file dual storage
-│   ├── quintuple_rag_query.py  #   Cypher keyword RAG retrieval
-│   ├── task_manager.py         #   3-worker async task manager
-│   ├── memory_manager.py       #   GRAG orchestrator
-│   └── memory_client.py        #   NagaMemory remote client
-├── voice/                # Voice service
-│   ├── output/           #   TTS (Edge-TTS) + lip sync
-│   └── input/            #   ASR (FunASR) + realtime voice (Qwen Omni)
-├── guide_engine/         # Game guide engine — cloud RAG service
-├── frontend/             # Electron + Vue 3 frontend
-│   ├── electron/         #   Main process (window mgmt, floating ball, backend, hotkeys)
-│   └── src/              #   Vue 3 app
-│       ├── views/        #     MessageView / MindView / SkillView / ModelView / MemoryView / ConfigView
-│       ├── components/   #     Live2dModel / SplashScreen / LoginDialog / ...
-│       ├── composables/  #     useAuth / useStartupProgress / useVersionCheck / useToolStatus
-│       └── utils/        #     live2dController (4-channel animation) / encoding / session
-├── ui/                   # PyQt5 GUI (MVC)
-├── system/               # Config loader, env checker, system prompts, background analyzer
-├── main.py               # Unified entry point, orchestrates all services
-├── config.json           # Runtime config (copy from config.json.example)
-└── pyproject.toml        # Project metadata & dependencies
-```
-
----
-
-## Quick Start
-
-### Requirements
-
-- Python 3.11 (`>=3.11, <3.12`)
-- Optional: [uv](https://github.com/astral-sh/uv) (faster dependency installation)
-- Optional: Neo4j (knowledge graph memory)
-
-### Installation
+#### Using Auto-Install Script
 
 ```bash
-git clone https://github.com/Xxiii8322766509/NagaAgent.git
-cd NagaAgent
+# Windows
+setup.bat
 
-# Option 1: Setup script (auto-detects env, creates venv, installs deps)
+# Linux/macOS
+./setup.sh
+
+# Or using Python script
 python setup.py
-
-# Option 2: Using uv
-uv sync
-
-# Option 3: Manual
-python -m venv .venv
-source .venv/bin/activate  # Windows: .\.venv\Scripts\activate
-pip install -r requirements.txt
 ```
 
-### Configuration
+#### Manual Installation
 
-Copy `config.json.example` to `config.json` and fill in your LLM API credentials:
+```bash
+# Without uv
+python -m venv .venv
+
+# Linux/macOS
+source .venv/bin/activate
+# Windows
+.\.venv\Scripts\activate
+
+pip install -r requirements.txt
+
+# Using uv
+uv sync
+```
+
+### 2. Configuration File
+
+Copy and edit configuration file:
+
+```bash
+# Copy configuration template
+cp config.json.example config.json
+
+# Edit configuration file, fill in your API information
+```
+
+#### Basic Configuration
 
 ```json
 {
   "api": {
-    "api_key": "your-api-key",
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-v3.2"
+    "api_key": "your_api_key",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4"
+  },
+  "api_server": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8000,
+    "auto_start": true
   }
 }
 ```
 
-Works with any OpenAI-compatible API (DeepSeek, Qwen, OpenAI, Ollama, etc.).
+#### QQ/WeChat Integration Configuration
 
-### Launch
-
-```bash
-python main.py             # Full launch (API + Agent + MCP + Voice + GUI)
-uv run main.py             # Using uv
-python main.py --headless  # Headless mode (for Electron frontend)
+```json
+{
+  "qq": {
+    "enabled": true,
+    "bot_qq": "your_bot_qq_number",
+    "http_url": "http://127.0.0.1:3000",
+    "http_token": "",
+    "enable_undefined_tools": true,
+    "enable_voice": true,
+    "reply_mode": "both"
+  }
+}
 ```
 
-All services are orchestrated by `main.py`. For development, each can be started independently:
-
-```bash
-uvicorn apiserver.api_server:app --host 127.0.0.1 --port 8000 --reload
-uvicorn agentserver.agent_server:app --host 0.0.0.0 --port 8001
-```
-
-### Electron Frontend Development
-
-```bash
-cd frontend
-npm install
-npm run dev    # Dev mode (Vite + Electron)
-npm run build  # Production build
-```
-
----
-
-## Optional Configuration
-
-<details>
-<summary><b>Knowledge Graph Memory (Neo4j)</b></summary>
-
-Install Neo4j ([Docker](https://hub.docker.com/_/neo4j) or [Neo4j Desktop](https://neo4j.com/download/)), then configure:
+#### Optional: Neo4j Knowledge Graph
 
 ```json
 {
@@ -443,135 +178,394 @@ Install Neo4j ([Docker](https://hub.docker.com/_/neo4j) or [Neo4j Desktop](https
     "enabled": true,
     "neo4j_uri": "neo4j://127.0.0.1:7687",
     "neo4j_user": "neo4j",
-    "neo4j_password": "your-password"
+    "neo4j_password": "your_neo4j_password"
   }
 }
 ```
-</details>
 
-<details>
-<summary><b>Voice Interaction</b></summary>
+### 3. Start Application
+
+```bash
+# Windows
+start.bat
+
+# Linux/macOS
+./start.sh
+
+# Or run directly
+python main.py
+```
+
+---
+
+## 🎯 QQ/WeChat Integration
+
+### QQ Bot
+
+#### Configure NapCat
+
+1. Install and start [NapCat](https://github.com/NapNeko/NapCatQQ)
+2. Ensure NapCat runs on `http://127.0.0.1:3000`
+3. If using Token, fill in `http_token` in `config.json`
+
+#### QQ Commands
+
+| Command | Function |
+|---------|----------|
+| `/help` | Show help information |
+| `/text` | Switch to text mode |
+| `/voice` | Switch to voice mode |
+| `/both` | Switch to both mode |
+| `/mode` | View current configuration |
+| `/tools` | View all available tools |
+
+#### Reply Modes
+
+| Mode | Description |
+|------|-------------|
+| `text` | Send text only (long text auto-segmented) |
+| `voice` | Send voice only (long voice auto-segmented) |
+| `both` | Send both voice and text (both auto-segmented) |
+
+### WeChat Bot
+
+WeChat bot uses QR code login. After starting the program, a QR code will be displayed. Scan it with WeChat mobile app.
+
+---
+
+## 🤖 Tool System
+
+### Undefined Tool Set (48 tools)
+
+Provides rich online features including:
+
+- **🔍 Search Query** - Web search, web scraping
+- **📊 Hot Lists** - Baidu Hot, Weibo Hot, Douyin Hot
+- **🎬 Video Entertainment** - Bilibili search, video recommendations
+- **🎵 Music Related** - Music search, lyrics query
+- **🌤️ Life Services** - Weather query, time query, horoscope
+- **💰 Financial Info** - Gold price query
+- **📱 Social Related** - QQ related features
+- **📂 File Operations** - Read/write files, search files
+- **🛠️ Dev Tools** - Base64, Hash, network testing
+- **🤖 AI Assistant** - AI drawing, study helper
+
+### Common Tool Usage Examples
+
+#### Weather Query
+
+```
+What's the weather like in Beijing today?
+Will it rain in Shanghai tomorrow?
+/天气 Guangzhou
+```
+
+#### Web Search
+
+```
+Search for latest AI advancements
+Look up Python tutorial
+/搜索 quantum computing
+```
+
+#### AI Drawing
+
+```
+Draw a cute cat
+AI drawing: beach at sunset
+/画 cherry blossoms by the sea
+```
+
+#### Image Rendering
+
+```
+Render this markdown content
+/render # Hello World
+Render formula: E=mc²
+```
+
+---
+
+## 🎤 Voice Features
+
+### Supported TTS Engines
+
+- **Edge-TTS** - Online free TTS
+- **GPT-SoVITS** - Local customized TTS (recommended)
+- **VITS** - Efficient local TTS
+
+### GPT-SoVITS Configuration
 
 ```json
 {
-  "system": { "voice_enabled": true },
-  "tts": { "port": 5048, "default_voice": "zh-CN-XiaoxiaoNeural" }
+  "tts": {
+    "default_engine": "gpt_sovits",
+    "gpt_sovits_url": "http://127.0.0.1:9880",
+    "gpt_sovits_ref_text": "Reference text",
+    "gpt_sovits_ref_audio_path": "Reference audio path"
+  }
 }
 ```
 
-Realtime voice chat (requires Qwen DashScope API Key):
+### Start GPT-SoVITS
+
+```bash
+cd GPT-SoVITS directory
+python api_v2.py
+```
+
+---
+
+## 📱 Mobile Access
+
+### Configuration Steps
+
+1. Ensure `api_server.host` in `config.json` is `"0.0.0.0"`
+2. Configure firewall to allow port 8000
+3. Get computer IP: `ipconfig` (Windows) or `ifconfig` (Linux/Mac)
+4. Access from mobile browser: `http://your_computer_IP:8000`
+
+### Features
+
+- ✅ Responsive design, perfect for phones and tablets
+- ✅ Streaming conversation support
+- ✅ Conversation history memory
+- ✅ Markdown formatting
+- ✅ PWA support (can be added to home screen)
+
+---
+
+## 🔧 Intelligent Semantic Analysis
+
+### Feature Description
+
+The system automatically analyzes the semantic meaning of user messages and intelligently determines:
+
+- **Whether tool calling is needed** - Avoid triggering tools during casual chat
+- **Output length** - Automatically choose short/long/normal length based on content
+- **Reply style** - Intelligently select concise/detailed/emotional/helpful style
+
+### Semantic Analysis Examples
+
+```
+User: Hello
+Analysis: No tool needed, use short text + warm style
+
+User: What's the weather like today?
+Analysis: Need to call weather tool, use normal length + detailed style
+
+User: Help me search for AI
+Analysis: Need to call search tool, use normal length + helpful style
+```
+
+---
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+
+#### 1. Python Version Incompatible
+
+**Problem**: Python version error提示
+
+**Solution**: Ensure using Python 3.11
+
+```bash
+python --version
+```
+
+#### 2. Port Already in Use
+
+**Problem**: Port occupied提示 at startup
+
+**Solution**: Check if ports 8000, 8001, 8003, 5048 are available
+
+```bash
+# Windows
+netstat -ano | findstr :8000
+
+# Linux/Mac
+lsof -i :8000
+```
+
+#### 3. QQ Connection Failed (HTTP 403)
+
+**Problem**: QQ bot cannot connect
+
+**Solution**:
+1. Clear `http_token` and `ws_token` in `config.json`
+2. Ensure NapCat is running
+3. Check if NapCat configuration matches
+
+#### 4. GPT-SoVITS Connection Failed (HTTP 404)
+
+**Problem**: Voice features not working
+
+**Solution**:
+1. Start GPT-SoVITS service: `python api_v2.py`
+2. Ensure port 9880 is not occupied
+3. Test connection: `curl http://127.0.0.1:9880/`
+
+#### 5. Mobile Access Failed
+
+**Problem**: Cannot access web interface from mobile
+
+**Solution**:
+1. Ensure `api_server.host` is `"0.0.0.0"`
+2. Configure firewall to allow port 8000
+3. Ensure mobile and computer are on the same Wi-Fi network
+
+#### 6. Neo4j Connection Failed
+
+**Problem**: Knowledge graph not working
+
+**Solution**:
+1. Ensure Neo4j service is running
+2. Check if connection parameters are correct
+3. If always failing, temporarily disable GRAG feature
+
+---
+
+## 📝 Configuration Reference
+
+### Complete Configuration Example
 
 ```json
 {
+  "api": {
+    "api_key": "your_api_key",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4",
+    "temperature": 0.7,
+    "max_tokens": 4000
+  },
+  "api_server": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8000,
+    "auto_start": true
+  },
+  "qq": {
+    "enabled": true,
+    "bot_qq": "your_bot_qq_number",
+    "http_url": "http://127.0.0.1:3000",
+    "http_token": "",
+    "ws_token": "",
+    "enable_undefined_tools": true,
+    "enable_voice": true,
+    "enable_auto_reply": true,
+    "reply_mode": "both"
+  },
+  "wechat": {
+    "enabled": false
+  },
+  "grag": {
+    "enabled": false,
+    "neo4j_uri": "neo4j://127.0.0.1:7687",
+    "neo4j_user": "neo4j",
+    "neo4j_password": "your_password"
+  },
+  "tts": {
+    "default_engine": "gpt_sovits",
+    "gpt_sovits_url": "http://127.0.0.1:9880",
+    "gpt_sovits_ref_text": "Reference text",
+    "gpt_sovits_ref_audio_path": "Reference audio path"
+  },
+  "online_search": {
+    "searxng_url": "https://searxng.pylindex.top"
+  },
+  "system": {
+    "voice_enabled": true,
+    "voiceprint_enabled": false,
+    "voiceprint_owner_name": "Username"
+  },
   "voice_realtime": {
     "enabled": true,
-    "provider": "qwen",
-    "api_key": "your-dashscope-key",
-    "model": "qwen3-omni-flash-realtime"
-  }
-}
-```
-</details>
-
-<details>
-<summary><b>Live2D Avatar</b></summary>
-
-```json
-{
+    "voice_mode": "windows",
+    "tts_voice": "zh-CN-XiaoyiNeural"
+  },
   "live2d": {
-    "enabled": true,
-    "model_path": "path/to/your/model.model3.json"
+    "enabled": false,
+    "model_path": "ui/live2d_local/live2d_models/重音テト/重音テト.model3.json",
+    "fallback_image": "ui/img/standby.png",
+    "auto_switch": true,
+    "animation_enabled": true,
+    "touch_interaction": true
   }
 }
 ```
 
-Electron frontend Live2D config:
+---
 
-```json
-{
-  "web_live2d": {
-    "ssaa": 2,
-    "model": {
-      "source": "./models/your-model/model.model3.json",
-      "x": 0.5,
-      "y": 1.3,
-      "size": 6800
-    },
-    "face_y_ratio": 0.13,
-    "tracking_hold_delay_ms": 100
-  }
-}
-```
-</details>
+## 📊 Modified Files List
 
-<details>
-<summary><b>MQTT IoT</b></summary>
+### Core Modified Files
 
-```json
-{
-  "mqtt": {
-    "enabled": true,
-    "broker": "mqtt-broker-address",
-    "port": 1883,
-    "topic": "naga/agent/topic"
-  }
-}
-```
-</details>
+| File | Modifications |
+|------|--------------|
+| `mcpserver/agent_qq_wechat/message_listener.py` | Core: long text/voice segmentation, reply mode switching |
+| `apiserver/api_server.py` | Task deduplication cache, audio playback optimization, smart parameter mapping |
+| `mcpserver/mcp_scheduler.py` | MCP callback timeout adjustment: 5s → 30s |
+| `system/semantic_analyzer.py` | New: intelligent semantic analyzer |
+| `system/prompts/conversation_analyzer_prompt.txt` | Updated: supports `agentType: "none"` mode |
 
 ---
 
-## Ports
+## 📄 License
 
-| Service | Port | Description |
-|---------|------|-------------|
-| API Server | 8000 | Main interface: chat, config, auth, Skill Market |
-| Agent Server | 8001 | Intent analysis, task scheduling, OpenClaw |
-| MCP Server | 8003 | MCP tool registration & dispatch |
-| Voice Service | 5048 | TTS / ASR |
-| Neo4j | 7687 | Knowledge graph (optional) |
-| OpenClaw Gateway | 18789 | AI coding assistant (optional) |
+This project inherits the [MIT License](LICENSE) from the original NagaAgent.
 
 ---
 
-## Updating
+## 🙏 Credits
 
-```bash
-python update.py  # Auto git pull + dependency sync
-```
-
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Python version mismatch | Use Python 3.11, or use uv (manages Python versions automatically) |
-| Port in use | Check if ports 8000, 8001, 8003, 5048 are available |
-| Neo4j connection failed | Ensure Neo4j is running, verify config.json connection parameters |
-| Progress bar stuck | Check API key config; restart hint appears after 3s; Electron auto-polls backend health |
-
-```bash
-python main.py --check-env --force-check  # Environment diagnostics
-python main.py --quick-check              # Quick check
-```
+- **Original Project**: [NagaAgent](https://github.com/Xxiii8322766509/NagaAgent)
+- **NapCat**: [NapCat QQ](https://github.com/NapNeko/NapCatQQ) - QQ Bot Framework
+- **GPT-SoVITS**: [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) - TTS Engine
 
 ---
 
-## Building
+## 🤝 Contributing
 
-```bash
-python build.py  # Build Windows one-click runner package, output to dist/
-```
+Issues and Pull Requests are welcome!
 
 ---
 
-## Contributing
+## 📮 Changelog
 
-Issues and Pull Requests are welcome.
+### v4.1.0 Modified (2026-01-19)
+
+#### Core Improvements
+- ✅ Fixed PC text and voice duplicate output
+- ✅ Fixed QQ image recognition not following persona
+- ✅ Fixed QQ message format not responding to commands
+- ✅ Fixed incomplete long text output
+- ✅ Fixed long text not sending in multiple messages
+
+#### New Features
+- ✅ Automatic long text segmentation (500 chars/segment)
+- ✅ Automatic long voice segmentation (200 chars/segment)
+- ✅ Intelligent semantic splitting
+- ✅ Reply mode switching support
+
+#### Performance Optimizations
+- ✅ MCP callback timeout: 5s → 30s
+- ✅ Task deduplication cache
+- ✅ Optimized callback retry mechanism
+
+#### Code Cleanup
+- ✅ Deleted 30+ duplicate/obsolete documentation
+- ✅ Deleted 16 test files
+- ✅ Simplified project structure
 
 ---
 
-## Star History
+<div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Xxiii8322766509/NagaAgent&type=date&legend=top-left)](https://www.star-history.com/#Xxiii8322766509/NagaAgent&type=date&legend=top-left)
+**If this project helps you, please give a Star to both the original and this modified version ⭐**
+
+**NagaAgent Modified Version**
+
+Made with ❤️ by the community
+
+</div>

@@ -1,14 +1,6 @@
 import json as _json
-
-try:
-    from py2neo import Graph, Node, Relationship
-    from py2neo.errors import ServiceUnavailable
-except ImportError:
-    Graph = None  # type: ignore[assignment,misc]
-    Node = None  # type: ignore[assignment,misc]
-    Relationship = None  # type: ignore[assignment,misc]
-    ServiceUnavailable = Exception  # type: ignore[assignment,misc]
-
+from py2neo import Graph, Node, Relationship
+from py2neo.errors import ServiceUnavailable
 import logging
 import sys
 import os
@@ -90,9 +82,6 @@ def get_graph():
     global _graph, GRAG_ENABLED
 
     if _graph is None:
-        if Graph is None:
-            GRAG_ENABLED = False
-            return None
         # 直接从系统配置获取，避免全局变量问题
         try:
             from system.config import config

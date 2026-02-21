@@ -1,7 +1,7 @@
-import sys
-import os
+import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))  # 加入项目根目录到模块查找路径
 import edge_tts
+from edge_tts import Communicate
 import asyncio
 import tempfile
 import subprocess

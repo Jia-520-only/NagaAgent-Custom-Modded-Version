@@ -4,14 +4,9 @@
 直接使用原始实现，仅添加必要的线程保护
 """
 
-try:
-    from PyQt5.QtCore import QObject, pyqtSignal
-    HAS_QT = True
-except ImportError:
-    QObject = object
-    HAS_QT = False
-    pyqtSignal = lambda *a, **kw: None
+from nagaagent_core.vendors.PyQt5.QtCore import QObject, pyqtSignal
 import threading
+from typing import Optional
 
 
 class ThreadSafeVoiceIntegration(QObject):
@@ -54,6 +49,15 @@ class ThreadSafeVoiceIntegration(QObject):
             # 确保配置中包含使用语音提示词的设置
             if 'use_voice_prompt' not in config_params:
                 config_params['use_voice_prompt'] = True  # 默认启用语音提示词
+
+            # 获取provider，如果为local则转换为qwen
+            provider = config_params.get('provider', 'qwen')
+            if provider == 'local':
+                # local模式降级到qwen，因为当前没有专门的local适配器
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning("[Voice] local模式暂未实现，使用qwen模式代替")
+                config_params['provider'] = 'qwen'
 
             # 创建客户端（在主线程中）
             self.voice_client = create_voice_client(**config_params)
@@ -200,7 +204,7 @@ class ThreadSafeVoiceIntegration(QObject):
                 self.parent.on_voice_status(data)
             elif action == "error":
                 self.parent.on_voice_error(data)
-        except Exception:
+        except Exception as e:
             import traceback
             traceback.print_exc()
 

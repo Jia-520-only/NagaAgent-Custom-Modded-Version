@@ -1,5 +1,4 @@
 {
-  "name": "app_launcher",
   "displayName": "应用启动服务",
   "version": "2.2.0",
   "description": "智能获取应用列表并启动指定应用",
@@ -23,4 +22,4 @@
       }
     ]
   }
-}
+} 

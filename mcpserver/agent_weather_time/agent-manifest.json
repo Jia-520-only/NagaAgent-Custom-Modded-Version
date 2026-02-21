@@ -1,5 +1,4 @@
 {
-  "name": "weather_time",
   "displayName": "天气时间Agent",
   "version": "1.0.0",
   "description": "支持今日天气查询、未来天气预报查询、时间查询，自动识别城市和IP，返回处理后的天气数据。",
@@ -28,4 +27,4 @@
       }
     ]
   }
-}
+} 

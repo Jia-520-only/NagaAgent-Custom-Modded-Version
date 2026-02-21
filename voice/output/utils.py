@@ -2,8 +2,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))  # 加入项目根目录到模块查找路径
 # utils.py
-from fastapi import Request
-from fastapi.responses import JSONResponse
+from nagaagent_core.api import request, jsonify
 from functools import wraps
 from system.config import config  # 使用统一配置系统
 DEFAULT_LANGUAGE = config.tts.default_language # 统一配置
@@ -20,16 +19,16 @@ DETAILED_ERROR_LOGGING = getenv_bool('DETAILED_ERROR_LOGGING', True)
 
 def require_api_key(f):
     @wraps(f)
-    async def decorated_function(request: Request, *args, **kwargs):
+    def decorated_function(*args, **kwargs):
         if not REQUIRE_API_KEY:
-            return await f(request, *args, **kwargs)
+            return f(*args, **kwargs)
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
-            return JSONResponse({"error": "Missing or invalid API key"}, status_code=401)
+            return jsonify({"error": "Missing or invalid API key"}), 401
         token = auth_header.split('Bearer ')[1]
         if token != API_KEY:
-            return JSONResponse({"error": "Invalid API key"}, status_code=401)
-        return await f(request, *args, **kwargs)
+            return jsonify({"error": "Invalid API key"}), 401
+        return f(*args, **kwargs)
     return decorated_function
 
 # Mapping of audio format to MIME type

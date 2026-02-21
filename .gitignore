@@ -7,8 +7,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-!frontend/build/
-frontend/backend-dist/
 eggs/
 .eggs/
 lib/
@@ -40,7 +38,6 @@ logs/**/*.log
 *.log
 logs/knowledge_graph/quintuples.json
 logs/knowledge_graph/graph.html
-logs/.auth_session
 
 # Audio temporary files
 logs/audio_temp/*.mp3
@@ -52,8 +49,6 @@ logs/audio_temp/*.flac
 !logs/audio_temp/README.md
 
 # Session and history
-sessions/
-uploaded_documents/
 *.session
 *.history
 *.cache
@@ -105,6 +100,37 @@ desktop.ini
 *token*
 *credential*
 !**/prompts/**
+
+# Temporary test files and reports
+test_*.py
+test_*.bat
+*_report.md
+*_修复报告.md
+*_配置报告.md
+*_验证报告.md
+*_开发报告.md
+*_优化报告.md
+*_问题修复.md
+*_指南.md
+*_步骤.md
+
+# User-generated content
+img/
+imgs/
+user_upload/
+audio/
+
+# Project-specific directories
+LifeBook/
+MiroFish/
+VCPChat/
+VCPToolBox/
+Undefined/
+references/
+archive/
+docs_archive/
+Fixlogs/
+reports/
 
 # Generated documentation
 docs/_build/
@@ -208,14 +234,3 @@ target/
 # IPython
 profile_default/
 ipython_config.py
-
-# Claude Code
-.claude/
-CLAUDE.md
-tmp/
-
-# Cursor
-.cursorrules
-
-# MAA 游戏脚本代理 MCP（用户私有配置，不提交）
-mcpserver/agent_auto_game/

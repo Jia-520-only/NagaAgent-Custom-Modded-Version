@@ -1,17 +1,19 @@
+import traceback
 import json
 import logging
+import re
 import sys
 import os
 import time
 import asyncio
-from typing import List
+from typing import List, Tuple
 from pydantic import BaseModel
 
 # 添加项目根目录到路径，以便导入config
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from system.config import config
-from openai import OpenAI, AsyncOpenAI
+from nagaagent_core.core import OpenAI, AsyncOpenAI
 
 # 初始化OpenAI客户端
 client = OpenAI(

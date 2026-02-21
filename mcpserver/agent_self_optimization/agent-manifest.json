@@ -1,0 +1,63 @@
+{
+  "displayName": "自我优化系统",
+  "version": "1.0.0",
+  "description": "为NagaAgent提供自我检测、性能分析、自动优化和代码质量监控功能，实现系统自我进化",
+  "author": "NagaAgent Team",
+  "agentType": "mcp",
+  "entryPoint": {
+    "module": "mcpserver.agent_self_optimization.agent_self_optimization",
+    "class": "AgentSelfOptimization"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "check_system_health",
+        "description": "检查系统健康状态，包括CPU、内存、磁盘使用率和各服务状态",
+        "parameters": {}
+      },
+      {
+        "command": "analyze_performance",
+        "description": "分析系统性能，包括各操作的耗时、调用次数和错误率",
+        "parameters": {
+          "operation_name": "指定要分析的操作名称，不指定则分析所有操作"
+        }
+      },
+      {
+        "command": "run_optimization",
+        "description": "运行自动优化，基于健康检查和性能分析结果自动优化系统",
+        "parameters": {}
+      },
+      {
+        "command": "analyze_code_quality",
+        "description": "分析代码质量，检测复杂度、重复代码、代码异味等问题",
+        "parameters": {}
+      },
+      {
+        "command": "export_reports",
+        "description": "导出所有分析报告到logs目录",
+        "parameters": {}
+      },
+      {
+        "command": "get_status",
+        "description": "获取自我优化系统的运行状态",
+        "parameters": {}
+      }
+    ]
+  },
+  "dependencies": {
+    "required": [
+      "psutil"
+    ],
+    "optional": [
+      "radon",
+      "pylint",
+      "flake8"
+    ]
+  },
+  "configuration": {
+    "check_interval": 3600,
+    "auto_apply_safe_optimizations": true,
+    "enable_code_quality_check": true,
+    "code_quality_check_interval": 86400
+  }
+}

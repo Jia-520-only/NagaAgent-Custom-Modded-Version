@@ -7,19 +7,14 @@
 3. 混合模式（通义千问ASR + API Server）
 """
 
-try:
-    from PyQt5.QtCore import QObject, pyqtSignal, QTimer
-    HAS_QT = True
-except ImportError:
-    QObject = object
-    HAS_QT = False
-    pyqtSignal = lambda *a, **kw: None
-    QTimer = None
+from nagaagent_core.vendors.PyQt5.QtCore import QObject, pyqtSignal, QTimer
 import threading
 import requests
+import json
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from enum import Enum
+from pathlib import Path
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +25,7 @@ class VoiceMode(Enum):
     LOCAL = "local"           # 本地FunASR模式
     END_TO_END = "end2end"    # 端到端通义千问模式
     HYBRID = "hybrid"         # 混合模式（通义千问ASR + API）
+    WINDOWS = "windows"       # Windows 11本地语音识别
 
 class UnifiedVoiceManager(QObject):
     """统一语音管理器"""
@@ -60,14 +56,19 @@ class UnifiedVoiceManager(QObject):
         """
         availability = {}
 
-        # 检测本地FunASR
+        # 检测本地FunASR（使用配置中的ASR端口）
         try:
-            response = requests.get("http://localhost:5000/health", timeout=1)
-            availability[VoiceMode.LOCAL] = response.status_code == 200
-            logger.info(f"[统一语音] 本地FunASR服务: {'可用' if availability[VoiceMode.LOCAL] else '不可用'}")
-        except:
+            from system.config import get_server_port
+            asr_port = get_server_port('asr_server')
+            try:
+                response = requests.get(f"http://localhost:{asr_port}/health", timeout=1)
+                availability[VoiceMode.LOCAL] = response.status_code == 200
+            except:
+                availability[VoiceMode.LOCAL] = False
+            logger.info(f"[统一语音] 本地FunASR服务（端口{asr_port}）: {'可用' if availability[VoiceMode.LOCAL] else '不可用'}")
+        except Exception as e:
             availability[VoiceMode.LOCAL] = False
-            logger.info("[统一语音] 本地FunASR服务: 不可用")
+            logger.info(f"[统一语音] 本地FunASR服务检测失败: {e}")
 
         # 检测通义千问配置
         from system.config import config
@@ -77,6 +78,16 @@ class UnifiedVoiceManager(QObject):
 
         logger.info(f"[统一语音] 通义千问端到端: {'可用' if availability[VoiceMode.END_TO_END] else '不可用'}")
         logger.info(f"[统一语音] 混合模式: {'可用' if availability[VoiceMode.HYBRID] else '不可用'}")
+
+        # 检测Windows语音识别
+        try:
+            from voice.input.windows_speech import WindowsSpeechRecognizer
+            windows_recognizer = WindowsSpeechRecognizer()
+            availability[VoiceMode.WINDOWS] = windows_recognizer.is_available()
+            logger.info(f"[统一语音] Windows语音识别: {'可用' if availability[VoiceMode.WINDOWS] else '不可用'}")
+        except Exception as e:
+            availability[VoiceMode.WINDOWS] = False
+            logger.info(f"[统一语音] Windows语音识别: 不可用 ({e})")
 
         return availability
 
@@ -101,16 +112,21 @@ class UnifiedVoiceManager(QObject):
 
             # 检测模式是否可用
             availability = self.detect_available_modes()
+
+            # 检查请求的模式是否可用
             if not availability.get(mode, False):
-                # 降级到可用的模式
-                for fallback_mode in [VoiceMode.HYBRID, VoiceMode.END_TO_END, VoiceMode.LOCAL]:
+                logger.warning(f"[统一语音] {mode.value}模式不可用，尝试降级")
+
+                # 降级到可用的模式（优先级：WINDOWS > LOCAL > END_TO_END > HYBRID）
+                for fallback_mode in [VoiceMode.WINDOWS, VoiceMode.LOCAL, VoiceMode.END_TO_END, VoiceMode.HYBRID]:
                     if availability.get(fallback_mode, False):
                         logger.warning(f"[统一语音] {mode.value}模式不可用，降级到{fallback_mode.value}模式")
                         mode = fallback_mode
                         break
                 else:
                     logger.error("[统一语音] 没有可用的语音模式")
-                    self.parent.chat_tool.add_user_message("系统", "❌ 没有可用的语音模式")
+                    if hasattr(self.parent, 'chat_tool'):
+                        self.parent.chat_tool.add_user_message("系统", "❌ 没有可用的语音模式，请检查配置和服务状态")
                     return False
 
             # 停止当前的语音服务
@@ -125,8 +141,23 @@ class UnifiedVoiceManager(QObject):
                 from voice.input.voice_thread_safe_simple import ThreadSafeVoiceIntegration
                 self.voice_integration = ThreadSafeVoiceIntegration(self.parent)
                 mode_name = "端到端语音（通义千问）"
+            elif mode == VoiceMode.WINDOWS:
+                # Windows本地语音识别模式
+                from voice.input.voice_thread_safe_simple import ThreadSafeVoiceIntegration
+                self.voice_integration = ThreadSafeVoiceIntegration(self.parent)
+                mode_name = "Windows本地语音识别"
+            elif mode == VoiceMode.LOCAL:
+                # 本地FunASR模式 - 使用端到端客户端，但通过配置标记为本地
+                from voice.input.voice_thread_safe_simple import ThreadSafeVoiceIntegration
+                self.voice_integration = ThreadSafeVoiceIntegration(self.parent)
+                mode_name = "本地语音识别（FunASR）"
+            elif mode == VoiceMode.HYBRID:
+                # 混合模式
+                from voice.input.voice_thread_safe_simple import ThreadSafeVoiceIntegration
+                self.voice_integration = ThreadSafeVoiceIntegration(self.parent)
+                mode_name = "混合语音模式"
             else:
-                # 其他模式已删除，统一使用端到端模式
+                # 默认使用端到端模式
                 from voice.input.voice_thread_safe_simple import ThreadSafeVoiceIntegration
                 self.voice_integration = ThreadSafeVoiceIntegration(self.parent)
                 mode_name = "统一语音模式"

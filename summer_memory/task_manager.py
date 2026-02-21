@@ -1,8 +1,7 @@
 import asyncio
 import logging
-import threading
 import time
-from typing import Dict, List, Optional, Callable, Tuple
+from typing import Dict, List, Optional, Callable, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -470,61 +469,16 @@ class QuintupleTaskManager:
 # 全局任务管理器实例
 task_manager = QuintupleTaskManager()
 
-async def auto_cleanup_tasks():
-    """自动清理已完成的任务"""
-    while True:
-        try:
-            await asyncio.sleep(3600)  # 每小时执行一次
-            await task_manager.clear_completed_tasks()
-        except Exception as e:
-            logger.error(f"自动清理任务失败: {e}")
-
-def start_auto_cleanup():
-    """启动自动清理任务"""
-    try:
-        # 确保在正确的事件循环中运行
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 如果事件循环已在运行，直接创建任务
-            loop.create_task(auto_cleanup_tasks())
-        else:
-            # 如果事件循环未运行，启动它
-            def run_cleanup():
-                asyncio.run(auto_cleanup_tasks())
-
-            thread = threading.Thread(target=run_cleanup, daemon=True)
-            thread.start()
-    except RuntimeError as e:
-        if "no current event loop" in str(e):
-            # 创建新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.create_task(auto_cleanup_tasks())
-            # 在新线程中运行事件循环
-            thread = threading.Thread(target=loop.run_forever, daemon=True)
-            thread.start()
-        else:
-            logger.error(f"启动自动清理任务失败: {e}")
-    except Exception as e:
-        logger.error(f"启动自动清理任务异常: {e}")
-
-# 添加全局标志
-_task_manager_running = False
 
 async def start_task_manager():
-    global _task_manager_running
-    if not _task_manager_running:
-        logger.info("启动任务管理器...")
-        await task_manager.start()
-        _task_manager_running = True
-        logger.info("任务管理器已成功启动")
-    else:
-        logger.info("任务管理器已在运行中")
+    """启动任务管理器（纯 asyncio）"""
+    logger.info("启动任务管理器...")
+    await task_manager.start()
+    logger.info("任务管理器已成功启动")
 
 async def stop_task_manager():
-    global _task_manager_running
-    if _task_manager_running:
-        logger.info("停止任务管理器...")
-        await task_manager.shutdown()
-        _task_manager_running = False
-        logger.info("任务管理器已停止")
+    """停止任务管理器（纯 asyncio）"""
+    logger.info("停止任务管理器...")
+    await task_manager.shutdown()
+    logger.info("任务管理器已停止")
+

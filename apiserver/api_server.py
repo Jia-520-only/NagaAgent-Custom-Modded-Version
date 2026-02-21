@@ -10,13 +10,35 @@ import sys
 import traceback
 import os
 import logging
+import uuid
 import time
 import threading
-import subprocess
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional, AsyncGenerator, Any, Tuple
-from urllib.request import Request as UrlRequest, urlopen
-from urllib.error import URLError
+from typing import Dict, List, Optional, AsyncGenerator, Any, TypedDict, Union
+
+# 类型定义：工具结果格式
+class ToolResult(TypedDict):
+    """工具执行结果的标准格式
+    
+    所有Undefined工具和MCP工具应遵循此返回格式
+    """
+    success: bool
+    result: str
+
+# 类型定义：回调payload格式
+class CallbackPayload(TypedDict):
+    """工具回调payload的标准格式"""
+    session_id: str
+    task_id: str
+    result: Dict[str, Any]
+    success: bool
+
+# 类型定义：工具执行结果项
+class ToolExecutionResult(TypedDict):
+    """单个工具的执行结果"""
+    tool: str
+    success: bool
+    result: Union[str, Dict[str, Any]]
 
 # 在导入其他模块前先设置HTTP库日志级别
 logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
@@ -26,10 +48,91 @@ logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
 # 创建logger实例
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+# 去重缓存：防止工具回调重试导致重复显示AI回复
+_task_callback_cache = set()  # 存储已处理的task_id
+
+# 定期清理旧的任务ID缓存（保留最近1小时的）
+def _cleanup_task_cache():
+    """定期清理已过期的任务ID缓存"""
+    global _task_callback_cache
+    # 简单的清理策略：如果缓存过大，清空一半
+    if len(_task_callback_cache) > 1000:
+        _task_callback_cache = set(list(_task_callback_cache)[500:])
+        logger.info(f"[工具回调] 已清理任务缓存，剩余: {len(_task_callback_cache)}")
+
+    # 每小时执行一次清理
+    threading.Timer(3600.0, _cleanup_task_cache).start()
+
+# 启动清理任务
+_cleanup_task_cache()
+
+# 工具类型判断：决定工具执行结果是否需要发送给用户
+def _should_send_result_to_user(tool_name: str) -> bool:
+    """
+    判断工具执行结果是否需要发送给用户
+
+    需要发送的工具类型：
+    - 信息搜集类：搜索、查询、读取等
+    - 内容输出类：绘图、翻译、文本生成等
+
+    不需要发送的工具类型（只记录日志）：
+    - 记忆管理类：LifeBook、五元组记忆等
+    - 任务管理类：创建任务、更新任务等
+    - 系统控制类：启动应用、系统命令等
+    - 屏幕控制类：包豆AI视觉自动化等
+    """
+    # 定义需要发送给用户的工具列表
+    user_facing_tools = {
+        # 信息搜集类
+        "搜索", "web_search", "web_browse", "bilibili_search", "bilibili_user_info",
+        "info_agent", "get_current_time", "get_weather",
+
+        # 内容输出类
+        "ai_draw_one", "local_ai_draw", "render_and_send_image",
+        "翻译", "translate", "summarize",
+
+        # 其他面向用户的工具
+        "音乐播放", "music_global_search", "music_info_get", "music_lyrics",
+        "聊天", "chat",
+    }
+
+    # 明确定义不需要发送给用户的工具（后台工具）
+    # 记忆管理
+    if any(keyword in tool_name.lower() for keyword in ["记录日记", "write_diary", "读取记忆", "read_lifebook",
+                                                      "创建节点", "create_node", "人生书", "lifebook"]):
+        return False
+
+    # 包豆AI视觉自动化
+    if any(keyword in tool_name.lower() for keyword in ["baodou", "包豆", "capture_screen", "analyze_task",
+                                                      "mouse_move", "mouse_click", "keyboard_type",
+                                                      "keyboard_press"]):
+        return False
+
+    # 任务管理
+    if any(keyword in tool_name.lower() for keyword in ["创建任务", "update_task", "任务管理"]):
+        return False
+
+    # 系统控制（启动应用除外，需要返回执行结果）
+    if any(keyword in tool_name.lower() for keyword in ["系统控制", "system_control", "command"]):
+        return False
+    # 注意：启动应用需要返回执行结果，所以不在此处过滤
+
+    # 检查工具名称是否在用户面向工具列表中
+    for user_tool in user_facing_tools:
+        if user_tool.lower() in tool_name.lower() or tool_name.lower() in user_tool.lower():
+            return True
+
+    # 默认不发送（只记录日志）
+    return False
+
+from nagaagent_core.api import uvicorn
+from nagaagent_core.api import FastAPI, HTTPException, Request, UploadFile, File, Form
+from nagaagent_core.api import CORSMiddleware
+from nagaagent_core.api import StreamingResponse
+from nagaagent_core.api import StaticFiles
+from nagaagent_core.api import HTMLResponse
 from pydantic import BaseModel
+from nagaagent_core.core import aiohttp
 import shutil
 from pathlib import Path
 
@@ -40,27 +143,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from .message_manager import message_manager  # 导入统一的消息管理器
 
 from .llm_service import get_llm_service  # 导入LLM服务
-from . import naga_auth  # NagaCAS 认证模块
-
-# 记录哪些会话曾发送过图片，后续消息继续走 VLM 直到新会话
-_vlm_sessions: set = set()
 
 # 导入配置系统
 try:
-    from system.config import get_config, AI_NAME  # 使用新的配置系统
-    from system.config import get_prompt, build_system_prompt  # 导入提示词仓库
-    from system.config_manager import get_config_snapshot, update_config  # 导入配置管理
+    from system.config import config, AI_NAME  # 使用新的配置系统
+    from system.config import get_prompt  # 导入提示词仓库
 except ImportError:
     import sys
     import os
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from system.config import get_config  # 使用新的配置系统
-    from system.config import build_system_prompt  # 导入提示词仓库
-    from system.config_manager import get_config_snapshot, update_config  # 导入配置管理
-from apiserver.response_util import extract_message  # 导入消息提取工具
+    from system.config import config, AI_NAME  # 使用新的配置系统
+    from system.config import get_prompt  # 导入提示词仓库
+from ui.utils.response_util import extract_message  # 导入消息提取工具
+
+# 任务调度系统
+try:
+    from system.task_service_manager import get_task_service_manager
+    _task_service_available = True
+except ImportError:
+    _task_service_available = False
+    logger.warning("[任务调度] 任务服务模块不可用，提醒功能将不可用")
 
 # 对话核心功能已集成到apiserver
+
+
+# 统一后台意图分析触发函数 - 已整合到message_manager
+def _trigger_background_analysis(session_id: str):
+    """统一触发后台意图分析 - 委托给message_manager"""
+    message_manager.trigger_background_analysis(session_id)
 
 
 # 统一保存对话与日志函数 - 已整合到message_manager
@@ -90,7 +201,7 @@ async def lifespan(app: FastAPI):
 
 
 # 创建FastAPI应用
-app = FastAPI(title="NagaAgent API", description="智能对话助手API服务", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="NagaAgent API", description="智能对话助手API服务", version="4.0.0", lifespan=lifespan)
 
 # 配置CORS
 app.add_middleware(
@@ -101,256 +212,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-@app.middleware("http")
-async def sync_auth_token(request: Request, call_next):
-    """每次请求自动同步前端 token 到后端认证状态，避免 token 刷新后后端仍持有旧 token"""
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        if token and token != naga_auth.get_access_token():
-            naga_auth.restore_token(token)
-    response = await call_next(request)
-    return response
-
-
 # 挂载静态文件
-# ============ 内部服务代理 ============
-
-
-async def _call_agentserver(
-    method: str,
-    path: str,
-    params: Optional[Dict[str, Any]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
-    timeout_seconds: float = 15.0,
-) -> Any:
-    """调用 agentserver 内部接口（用于透传 OpenClaw 状态查询等能力）"""
-    import httpx
-    from system.config import get_server_port
-
-    port = get_server_port("agent_server")
-    url = f"http://127.0.0.1:{port}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds, trust_env=False) as client:
-            resp = await client.request(method, url, params=params, json=json_body)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"agentserver 不可达: {e}")
-    if resp.status_code >= 400:
-        detail = resp.text
-        try:
-            detail = resp.json()
-        except Exception:
-            pass
-        raise HTTPException(status_code=resp.status_code, detail=detail)
-    try:
-        return resp.json()
-    except Exception:
-        return resp.text
-
-
-# [已禁用] MCP Server 已从 main.py 启动流程中移除，此代理函数不再有效，调用必定 503
-# async def _call_mcpserver(
-#     method: str,
-#     path: str,
-#     params: Optional[Dict[str, Any]] = None,
-#     timeout_seconds: float = 10.0,
-# ) -> Any:
-#     """调用 MCP Server 内部接口"""
-#     import httpx
-#     from system.config import get_server_port
-#
-#     port = get_server_port("mcp_server")
-#     url = f"http://127.0.0.1:{port}{path}"
-#     try:
-#         async with httpx.AsyncClient(timeout=timeout_seconds, trust_env=False) as client:
-#             resp = await client.request(method, url, params=params)
-#     except Exception as e:
-#         raise HTTPException(status_code=503, detail=f"MCP Server 不可达: {e}")
-#     if resp.status_code >= 400:
-#         detail = resp.text
-#         try:
-#             detail = resp.json()
-#         except Exception:
-#             pass
-#         raise HTTPException(status_code=resp.status_code, detail=detail)
-#     try:
-#         return resp.json()
-#     except Exception:
-#         return resp.text
-
-
-# ============ OpenClaw Skill Market ============
-
-OPENCLAW_STATE_DIR = Path.home() / ".openclaw"
-OPENCLAW_SKILLS_DIR = OPENCLAW_STATE_DIR / "skills"
-OPENCLAW_CONFIG_PATH = OPENCLAW_STATE_DIR / "openclaw.json"
-SKILLS_TEMPLATE_DIR = Path(__file__).resolve().parent / "skills_templates"
-MCPORTER_DIR = Path.home() / ".mcporter"
-MCPORTER_CONFIG_PATH = MCPORTER_DIR / "config.json"
-
-MARKET_ITEMS: List[Dict[str, Any]] = [
-    {
-        "id": "agent-browser",
-        "title": "Agent Browser",
-        "description": "Browser automation skill (install SKILL.md only, demo mode).",
-        "skill_name": "agent-browser",
-        "enabled": True,
-        "install": {
-            "type": "remote_skill",
-            "url": "https://raw.githubusercontent.com/vercel-labs/agent-browser/refs/heads/main/skills/agent-browser/SKILL.md",
-        },
-    },
-    {
-        "id": "office-docs",
-        "title": "Office Docs (docx + xlsx)",
-        "description": "Extract docx/xlsx content with local scripts (no extra deps).",
-        "skill_name": "office-docs",
-        "enabled": True,
-        "install": {
-            "type": "template_dir",
-            "template": "office-docs",
-        },
-    },
-    {
-        "id": "brainstorming",
-        "title": "Brainstorming",
-        "description": "Guided ideation and design exploration skill.",
-        "skill_name": "brainstorming",
-        "enabled": True,
-        "install": {
-            "type": "remote_skill",
-            "url": "https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/brainstorming/SKILL.md",
-        },
-    },
-    {
-        "id": "context7",
-        "title": "Context7 Docs",
-        "description": "Query library/API docs via mcporter + context7 MCP (stdio).",
-        "skill_name": "context7",
-        "enabled": True,
-        "install": {
-            "type": "template_dir",
-            "template": "context7",
-        },
-    },
-    {
-        "id": "search",
-        "title": "Search (Firecrawl MCP)",
-        "description": "Search MCP integration via mcporter + firecrawl-mcp.",
-        "skill_name": "search",
-        "enabled": True,
-        "install": {
-            "type": "template_dir",
-            "template": "search",
-        },
-    },
-]
-
-
-def _run_command(command: List[str], timeout: int = 30) -> Tuple[int, str, str]:
-    import locale
-    enc = locale.getpreferredencoding() or "utf-8"
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, shell=(sys.platform == "win32"), encoding=enc, errors="replace")
-    return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
-
-
-
-def _download_text(url: str, timeout: int = 20) -> str:
-    try:
-        request = UrlRequest(url, headers={"User-Agent": "NagaAgent/market-installer"})
-        with urlopen(request, timeout=timeout) as response:
-            return response.read().decode("utf-8")
-    except URLError as exc:
-        raise RuntimeError(f"下载失败: {exc}")
-
-
-def _write_skill_file(skill_name: str, content: str) -> Path:
-    skill_dir = OPENCLAW_SKILLS_DIR / skill_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    skill_path = skill_dir / "SKILL.md"
-    skill_path.write_text(content, encoding="utf-8")
-    return skill_path
-
-
-def _copy_template_dir(template_name: str, skill_name: str) -> None:
-    template_dir = SKILLS_TEMPLATE_DIR / template_name
-    if not template_dir.exists():
-        raise FileNotFoundError(f"模板不存在: {template_dir}")
-    skill_dir = OPENCLAW_SKILLS_DIR / skill_name
-    for path in template_dir.rglob("*"):
-        if path.is_dir():
-            continue
-        relative = path.relative_to(template_dir)
-        target_path = skill_dir / relative
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target_path)
-
-
-def _update_mcporter_firecrawl_config(api_key: Optional[str]) -> Path:
-    MCPORTER_DIR.mkdir(parents=True, exist_ok=True)
-    mcporter_config: Dict[str, Any] = {}
-    if MCPORTER_CONFIG_PATH.exists():
-        try:
-            mcporter_config = json.loads(MCPORTER_CONFIG_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            mcporter_config = {}
-    servers = mcporter_config.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-    server_entry = servers.get("firecrawl-mcp")
-    if not isinstance(server_entry, dict):
-        server_entry = {}
-    env = server_entry.get("env")
-    if not isinstance(env, dict):
-        env = {}
-    if api_key:
-        env["FIRECRAWL_API_KEY"] = api_key
-    elif "FIRECRAWL_API_KEY" not in env:
-        env["FIRECRAWL_API_KEY"] = "YOUR_FIRECRAWL_API_KEY"
-    server_entry.update({"command": "npx", "args": ["-y", "firecrawl-mcp"], "env": env})
-    servers["firecrawl-mcp"] = server_entry
-    mcporter_config["mcpServers"] = servers
-    MCPORTER_CONFIG_PATH.write_text(json.dumps(mcporter_config, ensure_ascii=True, indent=2), encoding="utf-8")
-    return MCPORTER_CONFIG_PATH
-
-
-def _install_agent_browser() -> None:
-    if shutil.which("npm") is None:
-        raise RuntimeError("未找到 npm，无法安装 agent-browser")
-    code, stdout, stderr = _run_command(["npm", "install", "-g", "agent-browser", "--force"], timeout=3000)
-    if code != 0:
-        raise RuntimeError(stderr or stdout or "npm install -g agent-browser --force 失败")
-    if shutil.which("agent-browser") is None:
-        raise RuntimeError("agent-browser 未安装成功或未在 PATH 中")
-    code, stdout, stderr = _run_command(["agent-browser", "install"], timeout=3000)
-    if code != 0:
-        raise RuntimeError(stderr or stdout or "agent-browser install 失败")
-
-
-def _build_market_item(item: Dict[str, Any]) -> Dict[str, Any]:
-    skill_name = str(item.get("skill_name") or item.get("id") or "unknown")
-    skill_path = OPENCLAW_SKILLS_DIR / skill_name / "SKILL.md"
-    return {
-        "id": item.get("id"),
-        "title": item.get("title"),
-        "description": item.get("description"),
-        "skill_name": skill_name,
-        "enabled": item.get("enabled", True),
-        "installed": skill_path.exists(),
-        "skill_path": str(skill_path),
-        "install_type": item.get("install", {}).get("type"),
-    }
-
-
-def _get_market_items_status() -> Dict[str, Any]:
-    return {
-        "openclaw": {
-            "skills_dir": str(OPENCLAW_SKILLS_DIR),
-            "config_path": str(OPENCLAW_CONFIG_PATH),
-        },
-        "items": [_build_market_item(item) for item in MARKET_ITEMS],
-    }
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 # 请求模型
@@ -358,16 +222,15 @@ class ChatRequest(BaseModel):
     message: str
     stream: bool = False
     session_id: Optional[str] = None
+    use_self_game: bool = False
     disable_tts: bool = False  # V17: 支持禁用服务器端TTS
     return_audio: bool = False  # V19: 支持返回音频URL供客户端播放
-    skill: Optional[str] = None  # 用户主动选择的技能名称，注入完整指令到系统提示词
-    images: Optional[List[str]] = None  # 截屏图片 base64 数据列表（data:image/png;base64,...）
-    temporary: bool = False  # 临时会话标记，临时会话不持久化到磁盘
+    skip_intent_analysis: bool = False  # 新增：跳过意图分析
+    chat_context: Optional[dict] = None  # 新增：聊天上下文（群聊/私聊信息）
 
 
 class ChatResponse(BaseModel):
     response: str
-    reasoning_content: Optional[str] = None  # COT 思考过程内容
     session_id: Optional[str] = None
     status: str = "success"
 
@@ -395,154 +258,50 @@ class DocumentProcessRequest(BaseModel):
     session_id: Optional[str] = None
 
 
-# ============ NagaCAS 认证端点 ============
-
-
-@app.post("/auth/login")
-async def auth_login(body: dict):
-    """NagaCAS 登录"""
-    username = body.get("username", "")
-    password = body.get("password", "")
-    captcha_id = body.get("captcha_id", "")
-    captcha_answer = body.get("captcha_answer", "")
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="用户名和密码不能为空")
-    try:
-        result = await naga_auth.login(username, password, captcha_id, captcha_answer)
-        return result
-    except Exception as e:
-        import httpx
-        status = 401
-        detail = str(e)
-        if isinstance(e, httpx.HTTPStatusError):
-            status = e.response.status_code
-            try:
-                err_data = e.response.json()
-                detail = err_data.get("message", e.response.text)
-            except Exception:
-                detail = e.response.text
-        logger.error(f"登录失败 [{status}]: {detail}")
-        raise HTTPException(status_code=status, detail=detail)
-
-
-@app.get("/auth/me")
-async def auth_me(request: Request):
-    """获取当前用户信息（优先使用服务端 token，其次从请求头恢复）"""
-    token = naga_auth.get_access_token()
-    if not token:
-        # 尝试从 Authorization 头恢复会话
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail="未登录")
-    user = await naga_auth.get_me(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="token 已失效")
-    # 恢复服务端认证状态
-    naga_auth.restore_token(token)
-    return {"user": user, "memory_url": naga_auth.NAGA_MEMORY_URL}
-
-
-@app.post("/auth/logout")
-async def auth_logout():
-    """登出"""
-    naga_auth.logout()
-    return {"success": True}
-
-
-@app.post("/auth/register")
-async def auth_register(body: dict):
-    """NagaBusiness 注册"""
-    username = body.get("username", "")
-    email = body.get("email", "")
-    password = body.get("password", "")
-    verification_code = body.get("verification_code", "")
-    if not username or not email or not password or not verification_code:
-        raise HTTPException(status_code=400, detail="用户名、邮箱、密码和验证码不能为空")
-    try:
-        result = await naga_auth.register(username, email, password, verification_code)
-        return {"success": True, **result}
-    except Exception as e:
-        import httpx
-        status = 500
-        detail = f"注册失败: {str(e)}"
-        if isinstance(e, httpx.HTTPStatusError):
-            status = e.response.status_code
-            try:
-                err_data = e.response.json()
-                detail = err_data.get("message", e.response.text)
-            except Exception:
-                detail = e.response.text
-        logger.error(f"注册失败 [{status}]: {detail}")
-        raise HTTPException(status_code=status, detail=detail)
-
-
-@app.get("/auth/captcha")
-async def auth_captcha():
-    """获取验证码（数学计算题）"""
-    try:
-        result = await naga_auth.get_captcha()
-        return result
-    except Exception as e:
-        logger.error(f"获取验证码失败: {e}")
-        raise HTTPException(status_code=500, detail=f"获取验证码失败: {str(e)}")
-
-
-@app.post("/auth/send-verification")
-async def auth_send_verification(body: dict):
-    """发送邮箱验证码"""
-    email = body.get("email", "")
-    username = body.get("username", "")
-    captcha_id = body.get("captcha_id", "")
-    captcha_answer = body.get("captcha_answer", "")
-    if not email or not username:
-        raise HTTPException(status_code=400, detail="邮箱和用户名不能为空")
-    try:
-        result = await naga_auth.send_verification(email, username, captcha_id, captcha_answer)
-        return {"success": True, "message": "验证码已发送"}
-    except Exception as e:
-        import httpx
-        status = 500
-        detail = str(e)
-        if isinstance(e, httpx.HTTPStatusError):
-            status = e.response.status_code
-            try:
-                err_data = e.response.json()
-                detail = err_data.get("message", e.response.text)
-            except Exception:
-                detail = e.response.text
-        logger.error(f"发送验证码失败 [{status}]: {detail}")
-        raise HTTPException(status_code=status, detail=detail)
-
-
-@app.post("/auth/refresh")
-async def auth_refresh(request: Request):
-    """刷新 token（后端管理 refresh_token，兼容接受 body 中的 refresh_token 用于迁移/非浏览器客户端）"""
-    rt_override = None
-    try:
-        body = await request.json()
-        rt_override = body.get("refresh_token") if isinstance(body, dict) else None
-    except Exception:
-        pass
-    try:
-        result = await naga_auth.refresh(rt_override)
-        return result
-    except Exception as e:
-        logger.error(f"刷新 token 失败: {e}")
-        raise HTTPException(status_code=401, detail=f"刷新失败: {str(e)}")
+class QQIntentAnalysisRequest(BaseModel):
+    session_id: str
+    message: str
+    ai_response: str
+    sender_id: Optional[str] = None  # 发送者ID（QQ号）
+    message_type: Optional[str] = "private"  # 消息类型：private 或 group
+    group_id: Optional[str] = None  # 群ID（群聊时使用）
+    image_path: Optional[str] = None  # 图片路径（用于视觉识别）
 
 
 # API路由
-@app.get("/", response_model=Dict[str, str])
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """API根路径"""
-    return {
-        "name": "NagaAgent API",
-        "version": "5.0.0",
-        "status": "running",
-        "docs": "/docs",
-    }
+    """API根路径 - 重定向到移动端聊天界面"""
+    html_path = os.path.join(static_dir, "mobile_chat.html")
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return HTMLResponse(
+            content=f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>NagaAgent</title></head>
+        <body>
+            <h1>NagaAgent API</h1>
+            <p>API服务器正在运行</p>
+            <p><a href="/docs">查看API文档</a></p>
+            <p><a href="/static/mobile_chat.html">移动端聊天</a></p>
+        </body>
+        </html>
+        """
+        )
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page():
+    """聊天页面"""
+    html_path = os.path.join(static_dir, "mobile_chat.html")
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>聊天页面未找到</h1>", status_code=404)
 
 
 @app.get("/health")
@@ -551,177 +310,16 @@ async def health_check():
     return {"status": "healthy", "agent_ready": True, "timestamp": str(asyncio.get_event_loop().time())}
 
 
-# ============ OpenClaw 任务状态查询（对外暴露在 API Server） ============
-
-
-@app.get("/openclaw/tasks")
-async def api_openclaw_list_tasks():
-    """列出本地缓存的 OpenClaw 任务（来自 agentserver）"""
-    return await _call_agentserver("GET", "/openclaw/tasks")
-
-
-@app.get("/openclaw/tasks/{task_id}")
-async def api_openclaw_get_task(
-    task_id: str,
-    include_history: bool = False,
-    history_limit: int = 50,
-    include_tools: bool = False,
-):
-    """获取 OpenClaw 任务状态（支持查看中间过程）
-
-    - `task_id`: 建议直接使用调度器的 task_id/request_id（agentserver /openclaw/send 支持透传）
-    - `include_history=true`: 附带 OpenClaw sessions_history（可用于查看更细粒度过程）
-    - `include_tools=true`: history 中尽量包含 tool 相关内容（取决于 OpenClaw 返回）
-    """
-    return await _call_agentserver(
-        "GET",
-        f"/openclaw/tasks/{task_id}/detail",
-        params={
-            "include_history": str(include_history).lower(),
-            "history_limit": history_limit,
-            "include_tools": str(include_tools).lower(),
-        },
-    )
-
-
 @app.get("/system/info", response_model=SystemInfoResponse)
 async def get_system_info():
     """获取系统信息"""
 
     return SystemInfoResponse(
-        version="5.0.0",
+        version="4.0.0",
         status="running",
         available_services=[],  # MCP服务现在由mcpserver独立管理
-        api_key_configured=bool(get_config().api.api_key and get_config().api.api_key != "sk-placeholder-key-not-set"),
+        api_key_configured=bool(config.api.api_key and config.api.api_key != "sk-placeholder-key-not-set"),
     )
-
-
-@app.get("/system/config")
-async def get_system_config():
-    """获取完整系统配置"""
-    try:
-        config_data = get_config_snapshot()
-        return {"status": "success", "config": config_data}
-    except Exception as e:
-        logger.error(f"获取系统配置失败: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"获取配置失败: {str(e)}")
-
-
-@app.post("/system/config")
-async def update_system_config(payload: Dict[str, Any]):
-    """更新系统配置"""
-    try:
-        success = update_config(payload)
-        if success:
-            return {"status": "success", "message": "配置更新成功"}
-        else:
-            raise HTTPException(status_code=500, detail="配置更新失败")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"更新系统配置失败: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
-
-
-@app.get("/system/prompt")
-async def get_system_prompt(include_skills: bool = False):
-    """获取系统提示词（默认只返回人格提示词，不包含技能列表）"""
-    try:
-        prompt = build_system_prompt(include_skills=include_skills)
-        return {"status": "success", "prompt": prompt}
-    except Exception as e:
-        logger.error(f"获取系统提示词失败: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"获取系统提示词失败: {str(e)}")
-
-
-@app.post("/system/prompt")
-async def update_system_prompt(payload: Dict[str, Any]):
-    """更新系统提示词"""
-    try:
-        content = payload.get("content")
-        if not content:
-            raise HTTPException(status_code=400, detail="缺少content参数")
-        from system.config import save_prompt
-
-        save_prompt("conversation_style_prompt", content)
-        return {"status": "success", "message": "提示词更新成功"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"更新系统提示词失败: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"更新系统提示词失败: {str(e)}")
-
-
-@app.get("/openclaw/market/items")
-def list_openclaw_market_items():
-    """获取OpenClaw技能市场条目（同步端点，由 FastAPI 在线程池中执行）"""
-    try:
-        status = _get_market_items_status()
-        return {"status": "success", **status}
-    except Exception as e:
-        logger.error(f"获取技能市场失败: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"获取技能市场失败: {str(e)}")
-
-
-@app.post("/openclaw/market/items/{item_id}/install")
-def install_openclaw_market_item(item_id: str, payload: Optional[Dict[str, Any]] = None):
-    """安装指定OpenClaw技能市场条目（同步端点，由 FastAPI 在线程池中执行）"""
-    item = next((entry for entry in MARKET_ITEMS if entry.get("id") == item_id), None)
-    if not item:
-        raise HTTPException(status_code=404, detail="条目不存在")
-    if not item.get("enabled", True):
-        raise HTTPException(status_code=400, detail="条目暂不可安装")
-
-    install_spec = item.get("install", {})
-    install_type = install_spec.get("type")
-    skill_name_value = item.get("skill_name") or item.get("id")
-    if not skill_name_value:
-        raise HTTPException(status_code=500, detail="技能名称缺失")
-    skill_name = str(skill_name_value)
-
-    try:
-        if item_id == "agent-browser":
-            _install_agent_browser()
-        if item_id == "search":
-            api_key = None
-            if payload and isinstance(payload, dict):
-                api_key = payload.get("api_key") or payload.get("FIRECRAWL_API_KEY")
-            _update_mcporter_firecrawl_config(api_key)
-        if install_type == "remote_skill":
-            url = install_spec.get("url")
-            if not url:
-                raise HTTPException(status_code=500, detail="缺少安装URL")
-            content = _download_text(url)
-            _write_skill_file(skill_name, content)
-        elif install_type == "template_dir":
-            template_name = install_spec.get("template")
-            if not template_name:
-                raise HTTPException(status_code=500, detail="缺少模板名称")
-            _copy_template_dir(template_name, skill_name)
-        elif install_type == "none":
-            raise HTTPException(status_code=400, detail="该条目不支持安装")
-        else:
-            raise HTTPException(status_code=400, detail="未知安装方式")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"安装技能失败({item_id}): {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"安装失败: {str(e)}")
-
-    status = _get_market_items_status()
-    installed_item = next((entry for entry in status.get("items", []) if entry.get("id") == item_id), None)
-    return {
-        "status": "success",
-        "message": "安装完成",
-        "item": installed_item,
-        "openclaw": status.get("openclaw"),
-    }
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -732,59 +330,102 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="消息内容不能为空")
 
     try:
-        # 用户消息保持干净，技能上下文完全由 system prompt 承载
-        user_message = request.message
-        session_id = message_manager.create_session(request.session_id, temporary=request.temporary)
+        # 先检查是否是任务相关的请求
+        if _task_service_available:
+            try:
+                from system.task_service_manager import get_task_service_manager
+                task_service = get_task_service_manager()
+                
+                # 处理用户输入
+                result = await task_service.process_user_input(request.message)
+                
+                if result and result.get("success"):
+                    # 是任务相关，直接返回响应
+                    # 保存对话历史
+                    session_id = message_manager.create_session(request.session_id)
+                    _save_conversation_and_logs(session_id, request.message, result["response"])
+                    
+                    # 触发后台分析
+                    if not request.skip_intent_analysis:
+                        _trigger_background_analysis(session_id=session_id)
+                    
+                    return ChatResponse(
+                        response=result["response"],
+                        session_id=session_id,
+                        status="success"
+                    )
+            except Exception as e:
+                logger.warning(f"[任务调度] 处理任务请求失败: {e}")
+                # 继续正常对话流程
+        
+        # 分支: 启用博弈论流程（非流式，返回聚合文本）
+        if request.use_self_game:
+            # 配置项控制：失败时可跳过回退到普通对话 #
+            skip_on_error = getattr(getattr(config, "game", None), "skip_on_error", True)  # 兼容无配置情况 #
+            enabled = getattr(getattr(config, "game", None), "enabled", False)  # 控制总开关 #
+            if enabled:
+                try:
+                    # 延迟导入以避免启动时循环依赖 #
+                    from game.naga_game_system import NagaGameSystem  # 博弈系统入口 #
+                    from game.core.models.config import GameConfig  # 博弈系统配置 #
 
-        # 构建系统提示词（包含技能元数据）
-        system_prompt = build_system_prompt(include_skills=True, skill_name=request.skill)
+                    # 创建系统并执行用户问题处理 #
+                    system = NagaGameSystem(GameConfig())
+                    system_response = await system.process_user_question(
+                        user_question=request.message, user_id=request.session_id or "api_user"
+                    )
+                    return ChatResponse(
+                        response=system_response.content, session_id=request.session_id, status="success"
+                    )
+                except Exception as e:
+                    print(
+                        f"[WARNING] 博弈论流程失败，将{'回退到普通对话' if skip_on_error else '返回错误'}: {e}"
+                    )  # 运行时警告 #
+                    if not skip_on_error:
+                        raise HTTPException(status_code=500, detail=f"博弈论流程失败: {str(e)}")
+                    # 否则继续走普通对话流程 #
+            # 若未启用或被配置跳过，则直接回退到普通对话分支 #
 
-        # RAG 记忆召回
-        try:
-            from summer_memory.memory_client import get_remote_memory_client
+        # 获取或创建会话ID
+        session_id = message_manager.create_session(request.session_id)
 
-            remote_mem = get_remote_memory_client()
-            if remote_mem:
-                mem_result = await remote_mem.query_memory(question=request.message, limit=5)
-                if mem_result.get("success") and mem_result.get("quintuples"):
-                    quints = mem_result["quintuples"]
-                    mem_lines = []
-                    for q in quints:
-                        if isinstance(q, (list, tuple)) and len(q) >= 5:
-                            mem_lines.append(f"- {q[0]}({q[1]}) —[{q[2]}]→ {q[3]}({q[4]})")
-                        elif isinstance(q, dict):
-                            mem_lines.append(f"- {q.get('subject','')}({q.get('subject_type','')}) —[{q.get('predicate','')}]→ {q.get('object','')}({q.get('object_type','')})")
-                    if mem_lines:
-                        system_prompt += "\n\n## 相关记忆\n\n以下是从知识图谱中检索到的与用户问题相关的记忆，请参考这些信息回答：\n" + "\n".join(mem_lines)
-                        logger.info(f"[RAG] 召回 {len(mem_lines)} 条记忆注入上下文")
-                elif mem_result.get("success") and mem_result.get("answer"):
-                    system_prompt += f"\n\n## 相关记忆\n\n以下是从知识图谱中检索到的与用户问题相关的记忆：\n{mem_result['answer']}"
-                    logger.info(f"[RAG] 召回记忆（answer 模式）注入上下文")
-        except Exception as e:
-            logger.debug(f"[RAG] 记忆召回失败（不影响对话）: {e}")
-
-        # 附加知识收尾指令，引导 LLM 回到用户问题
-        system_prompt += "\n\n【读完这些附加知识后，回复上一个user prompt，并不要回复这条系统附加的system prompt。以下是回复内容：】"
-
-        # 用户消息直接传 LLM，技能上下文完全由 system prompt 承载
-        effective_message = request.message
+        # 构建系统提示词（只使用对话风格提示词）
+        system_prompt = get_prompt("conversation_style_prompt")
 
         # 使用消息管理器构建完整的对话消息（纯聊天，不触发工具）
         messages = message_manager.build_conversation_messages(
-            session_id=session_id, system_prompt=system_prompt, current_message=effective_message
+            session_id=session_id, system_prompt=system_prompt, current_message=request.message,
+            chat_context=request.chat_context
         )
 
-        # 使用整合后的LLM服务（支持 reasoning_content）
+        # 使用整合后的LLM服务
         llm_service = get_llm_service()
-        llm_response = await llm_service.chat_with_context_and_reasoning(messages, get_config().api.temperature)
+        response_text = await llm_service.chat_with_context(messages, config.api.temperature)
+
+        # 处理语音（非流式模式）
+        if config.system.voice_enabled and not request.disable_tts and config.voice_realtime.voice_mode != "hybrid":
+            try:
+                from voice.output.voice_integration import get_voice_integration
+
+                voice_integration = get_voice_integration()
+                voice_integration.receive_final_text(response_text)
+                # 检查是否是QQ消息，用于日志记录
+                is_qq_message = session_id and session_id.startswith('qq_')
+                location = "电脑端和QQ端" if is_qq_message else "电脑端"
+                logger.info(f"[API Server] 非流式模式：语音集成已收到完整文本，播放位置: {location}，长度: {len(response_text)}")
+            except Exception as e:
+                logger.error(f"[API Server] 非流式语音处理失败: {e}")
 
         # 处理完成
         # 统一保存对话历史与日志
-        _save_conversation_and_logs(session_id, user_message, llm_response.content)
+        _save_conversation_and_logs(session_id, request.message, response_text)
+
+        # 在用户消息保存到历史后触发后台意图分析（除非明确跳过）
+        if not request.skip_intent_analysis:
+            _trigger_background_analysis(session_id=session_id)
 
         return ChatResponse(
-            response=extract_message(llm_response.content) if llm_response.content else llm_response.content,
-            reasoning_content=llm_response.reasoning_content,
+            response=extract_message(response_text) if response_text else response_text,
             session_id=session_id,
             status="success",
         )
@@ -796,297 +437,306 @@ async def chat(request: ChatRequest):
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """流式对话接口 - 使用 agentic tool loop 实现多轮工具调用"""
+    """流式对话接口 - 流式文本处理交给streaming_tool_extractor用于TTS"""
 
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="消息内容不能为空")
 
-    # 用户消息保持干净，技能上下文完全由 system prompt 承载
-    user_message = request.message
-
     async def generate_response() -> AsyncGenerator[str, None]:
-        complete_text = ""  # 用于累积最终轮的完整文本（供 return_audio 模式使用）
+        complete_text = ""  # V19: 用于累积完整文本以生成音频
+        # 创建任务列表，用于等待所有文本块处理完成
+        processing_tasks = []
         try:
+            # 先检查是否是任务相关的请求
+            if _task_service_available:
+                try:
+                    from system.task_service_manager import get_task_service_manager
+                    task_service = get_task_service_manager()
+
+                    # 处理用户输入
+                    result = await task_service.process_user_input(request.message)
+
+                    logger.info(f"[API Server 流式] 任务检查结果: {result}")
+
+                    if result and result.get("success"):
+                        # 是任务相关，直接返回响应
+                        logger.info(f"[API Server 流式] 识别为任务意图: {result.get('intent_type')}")
+
+                        # 创建会话ID并保存对话
+                        session_id = message_manager.create_session(request.session_id)
+                        yield f"data: session_id: {session_id}\n\n"
+
+                        # 返回任务响应
+                        response_text = result["response"]
+
+                        # 流式输出任务响应
+                        import base64
+                        for i in range(0, len(response_text), 5):
+                            chunk = response_text[i:i+5]
+                            b64 = base64.b64encode(chunk.encode('utf-8')).decode('ascii')
+                            yield f"data: {b64}\n\n"
+
+                        # 如果需要返回音频，生成音频
+                        if request.return_audio:
+                            try:
+                                logger.info(f"[API Server V19] 任务响应生成音频，文本长度: {len(response_text)}")
+
+                                from voice.output.voice_integration import VoiceIntegration
+                                voice_integration = VoiceIntegration()
+                                audio_data = voice_integration._generate_audio_sync(response_text)
+
+                                if audio_data:
+                                    import uuid
+                                    temp_dir = "logs/audio_temp"
+                                    os.makedirs(temp_dir, exist_ok=True)
+                                    audio_file = os.path.join(temp_dir, f"tts_{uuid.uuid4().hex}.mp3")
+
+                                    with open(audio_file, "wb") as f:
+                                        f.write(audio_data)
+
+                                    logger.info(f"[API Server V19] 任务音频生成成功: {audio_file}")
+                                    yield f"data: audio_url: {audio_file}\n\n"
+
+                                    # 播放给UI端
+                                    is_qq_message = session_id and session_id.startswith('qq_')
+                                    is_tool_callback = request.skip_intent_analysis or ("[工具结果]" in response_text)
+                                    if not is_tool_callback:
+                                        try:
+                                            voice_integration.receive_audio_url(audio_file)
+                                            ui_location = "电脑端和QQ端都播放" if is_qq_message else "UI端播放"
+                                            logger.info(f"[API Server V19] 任务音频已发送到{ui_location}")
+                                        except Exception as e:
+                                            logger.error(f"[API Server V19] UI端音频播放失败: {e}")
+                            except Exception as e:
+                                logger.error(f"[API Server V19] 任务音频生成失败: {e}")
+
+                        # 保存对话历史
+                        _save_conversation_and_logs(session_id, request.message, response_text)
+
+                        # 触发后台分析
+                        if not request.skip_intent_analysis:
+                            _trigger_background_analysis(session_id)
+
+                        yield "data: [DONE]\n\n"
+                        return
+                except Exception as e:
+                    logger.warning(f"[任务调度] 流式任务检查失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # 继续正常对话流程
+
             # 获取或创建会话ID
-            session_id = message_manager.create_session(request.session_id, temporary=request.temporary)
+            session_id = message_manager.create_session(request.session_id)
 
             # 发送会话ID信息
             yield f"data: session_id: {session_id}\n\n"
 
-            # 构建系统提示词（含工具调用指令 + 用户选择的技能）
-            system_prompt = build_system_prompt(include_skills=True, include_tool_instructions=True, skill_name=request.skill)
+            # 注意：这里不触发后台分析，将在对话保存后触发
 
-            # ====== RAG 记忆召回：在发送 LLM 前检索相关记忆 ======
-            try:
-                from summer_memory.memory_client import get_remote_memory_client
-
-                remote_mem = get_remote_memory_client()
-                if remote_mem:
-                    mem_result = await remote_mem.query_memory(question=request.message, limit=5)
-                    if mem_result.get("success") and mem_result.get("quintuples"):
-                        quints = mem_result["quintuples"]
-                        mem_lines = []
-                        for q in quints:
-                            if isinstance(q, (list, tuple)) and len(q) >= 5:
-                                mem_lines.append(f"- {q[0]}({q[1]}) —[{q[2]}]→ {q[3]}({q[4]})")
-                            elif isinstance(q, dict):
-                                mem_lines.append(f"- {q.get('subject','')}({q.get('subject_type','')}) —[{q.get('predicate','')}]→ {q.get('object','')}({q.get('object_type','')})")
-                        if mem_lines:
-                            memory_context = "\n\n## 相关记忆\n\n以下是从知识图谱中检索到的与用户问题相关的记忆，请参考这些信息回答：\n" + "\n".join(mem_lines)
-                            system_prompt += memory_context
-                            logger.info(f"[RAG] 召回 {len(mem_lines)} 条记忆注入上下文")
-                    elif mem_result.get("success") and mem_result.get("answer"):
-                        memory_context = f"\n\n## 相关记忆\n\n以下是从知识图谱中检索到的与用户问题相关的记忆：\n{mem_result['answer']}"
-                        system_prompt += memory_context
-                        logger.info(f"[RAG] 召回记忆（answer 模式）注入上下文")
-            except Exception as e:
-                logger.debug(f"[RAG] 记忆召回失败（不影响对话）: {e}")
-
-            # 附加知识收尾指令，引导 LLM 回到用户问题
-            system_prompt += "\n\n【读完这些附加知识后，回复上一个user prompt，并不要回复这条系统附加的system prompt。以下是回复内容：】"
-
-            # 用户消息直接传 LLM，技能上下文完全由 system prompt 承载
-            effective_message = request.message
-
-            # ====== 启动压缩：将上一个会话的历史 + 更早的压缩记录合并压缩，注入 system prompt ======
-            try:
-                from .context_compressor import compress_for_startup, build_compress_block
-                prev_session_id = message_manager._get_previous_session_id(session_id)
-                previous_compress = message_manager.get_session_compress(prev_session_id) if prev_session_id else ""
-                prev_messages = message_manager._get_previous_session_messages(session_id)
-                if prev_messages or previous_compress:
-                    summary = await compress_for_startup(prev_messages, previous_compress=previous_compress)
-                    if summary:
-                        system_prompt += build_compress_block(summary)
-                        message_manager.set_session_compress(session_id, summary)
-                        logger.info(f"[启动压缩] 已将上一会话摘要注入 system prompt ({len(summary)} 字)")
-            except Exception as e:
-                logger.debug(f"[启动压缩] 跳过: {e}")
+            # 构建系统提示词（只使用对话风格提示词）
+            system_prompt = get_prompt("conversation_style_prompt")
 
             # 使用消息管理器构建完整的对话消息
             messages = message_manager.build_conversation_messages(
-                session_id=session_id, system_prompt=system_prompt, current_message=effective_message
+                session_id=session_id, system_prompt=system_prompt, current_message=request.message,
+                chat_context=request.chat_context
             )
 
-            # 如果携带截屏图片，将最后一条用户消息改为多模态格式（OpenAI vision 兼容）
-            if request.images:
-                last_msg = messages[-1]
-                content_parts = [{"type": "text", "text": last_msg["content"]}]
-                for img_data in request.images:
-                    content_parts.append({"type": "image_url", "image_url": {"url": img_data}})
-                messages[-1] = {
-                    "role": "user",
-                    "content": content_parts,
-                }
-
             # 初始化语音集成（根据voice_mode和return_audio决定）
+            # V19: 如果客户端请求返回音频，则在服务器端生成
             voice_integration = None
 
+            # 检查是否是QQ消息 - 用于区分日志记录和音频播放策略
+            is_qq_message = session_id and session_id.startswith('qq_')
+
+            # V19: 混合模式下，如果请求return_audio，则在服务器生成音频
+            # 修复：非流式模式也需要启用TTS，通过receive_final_text接收完整文本
+            # 修改：QQ消息也启用TTS，让电脑端和QQ端都能播放语音
             should_enable_tts = (
-                get_config().system.voice_enabled
-                and not request.return_audio  # return_audio时不启用实时TTS
-                and get_config().voice_realtime.voice_mode != "hybrid"
-                and not request.disable_tts
+                config.system.voice_enabled
+                and config.voice_realtime.voice_mode != "hybrid"
+                and not request.disable_tts  # 兼容旧版本的disable_tts
             )
 
             if should_enable_tts:
+                if is_qq_message:
+                    logger.info("[API Server] QQ消息，启用TTS处理（电脑端+QQ端都播放）")
+            elif should_enable_tts:
                 try:
                     from voice.output.voice_integration import get_voice_integration
 
                     voice_integration = get_voice_integration()
                     logger.info(
-                        f"[API Server] 实时语音集成已启用 (return_audio={request.return_audio}, voice_mode={get_config().voice_realtime.voice_mode})"
+                        f"[API Server] 语音集成已启用 (stream={request.stream}, return_audio={request.return_audio}, voice_mode={config.voice_realtime.voice_mode})"
                     )
                 except Exception as e:
                     print(f"语音集成初始化失败: {e}")
             else:
-                if request.return_audio:
-                    logger.info("[API Server] return_audio模式，将在最后生成完整音频")
-                elif get_config().voice_realtime.voice_mode == "hybrid" and not request.return_audio:
-                    logger.info("[API Server] 混合模式下且未请求音频，不处理TTS")
+                if config.voice_realtime.voice_mode == "hybrid":
+                    logger.info("[API Server] 混合模式，不处理TTS")
                 elif request.disable_tts:
                     logger.info("[API Server] 客户端禁用了TTS (disable_tts=True)")
+                elif not config.system.voice_enabled:
+                    logger.info("[API Server] 语音功能未启用")
 
             # 初始化流式文本切割器（仅用于TTS处理）
+            # 始终创建tool_extractor以累积文本内容，确保日志保存
             tool_extractor = None
             try:
                 from .streaming_tool_extractor import StreamingToolCallExtractor
 
                 tool_extractor = StreamingToolCallExtractor()
-                if voice_integration and not request.return_audio:
+                # 流式模式：实时TTS；非流式模式：仅在最后处理完整文本
+                if voice_integration and request.stream:
                     tool_extractor.set_callbacks(
-                        on_text_chunk=None,
+                        on_text_chunk=None,  # 不需要回调，直接处理TTS
                         voice_integration=voice_integration,
                     )
             except Exception as e:
                 print(f"流式文本切割器初始化失败: {e}")
 
-            # ====== Agentic Tool Loop ======
-            from .agentic_tool_loop import run_agentic_loop
-
-            # 如果本次携带图片，标记此会话为 VLM 会话
-            if request.images:
-                _vlm_sessions.add(session_id)
-
-            # 如果当前会话曾发送过图片，持续使用视觉模型
-            model_override = None
-            use_vlm = session_id in _vlm_sessions
-            cc = get_config().computer_control
-            if use_vlm and cc.enabled and (cc.api_key or naga_auth.is_authenticated()):
-                model_override = {
-                    "model": cc.model,
-                    "api_base": cc.model_url,
-                    "api_key": cc.api_key,
-                }
-                logger.info(f"[API Server] VLM 会话，使用视觉模型: {cc.model}")
-
-            complete_reasoning = ""
-            # 记录每轮的content，用于在每轮结束时完成TTS处理
-            current_round_text = ""
-            is_tool_event = False  # 标记当前是否在处理工具事件（不送TTS）
-            was_compressed = False  # 运行时是否执行过上下文压缩（用于保存 info 标记）
-
-            async for chunk in run_agentic_loop(messages, session_id, model_override=model_override):
-                if chunk.startswith("data: "):
+            # 使用整合后的流式处理
+            llm_service = get_llm_service()
+            async for chunk in llm_service.stream_chat_with_context(messages, config.api.temperature):
+                # V19: 如果需要返回音频，累积文本
+                if request.return_audio and chunk.startswith("data: "):
                     try:
-                        import json as json_module
+                        import base64
 
                         data_str = chunk[6:].strip()
-                        if data_str and data_str != "[DONE]":
-                            chunk_data = json_module.loads(data_str)
-                            chunk_type = chunk_data.get("type", "content")
-                            chunk_text = chunk_data.get("text", "")
+                        if data_str != "[DONE]":
+                            decoded = base64.b64decode(data_str).decode("utf-8")
+                            complete_text += decoded
+                    except Exception:
+                        pass
 
-                            if chunk_type == "content":
-                                # 累积本轮内容（TTS + 保存）
-                                current_round_text += chunk_text
-                                if request.return_audio:
-                                    complete_text += chunk_text
-                                # TTS：每轮的正常content都发送（不含工具内容）
-                                if tool_extractor and not is_tool_event:
-                                    asyncio.create_task(tool_extractor.process_text_chunk(chunk_text))
-                            elif chunk_type == "reasoning":
-                                complete_reasoning += chunk_text
-                            elif chunk_type == "round_end":
-                                # 每轮结束时，完成TTS处理并重置
-                                has_more = chunk_data.get("has_more", False)
-                                if has_more and tool_extractor and not request.return_audio:
-                                    # 中间轮结束，flush TTS缓冲
-                                    try:
-                                        await tool_extractor.finish_processing()
-                                    except Exception as e:
-                                        logger.debug(f"中间轮TTS flush失败: {e}")
-                                    if voice_integration:
-                                        try:
-                                            threading.Thread(
-                                                target=voice_integration.finish_processing,
-                                                daemon=True,
-                                            ).start()
-                                        except Exception:
-                                            pass
-                                    # 重新初始化 tool_extractor 给下一轮使用
-                                    try:
-                                        tool_extractor = StreamingToolCallExtractor()
-                                        if voice_integration and not request.return_audio:
-                                            tool_extractor.set_callbacks(
-                                                on_text_chunk=None,
-                                                voice_integration=voice_integration,
-                                            )
-                                    except Exception:
-                                        pass
-                                current_round_text = ""
-                            elif chunk_type == "tool_calls":
-                                is_tool_event = True
-                            elif chunk_type == "tool_results":
-                                is_tool_event = True
-                            elif chunk_type == "round_start":
-                                # 新一轮开始，重置工具事件标记
-                                is_tool_event = False
-                            elif chunk_type == "compress_info":
-                                # 运行时压缩完成，标记后续需要保存 info 消息
-                                was_compressed = True
+                # 立即发送到流式文本切割器进行TTS处理（不阻塞文本流）
+                if tool_extractor and chunk.startswith("data: "):
+                    try:
+                        import base64
 
-                            # 透传所有 chunk 给前端（content/reasoning/tool events）
-                            yield chunk
-                            continue
+                        data_str = chunk[6:].strip()
+                        if (
+                            data_str != "[DONE]"
+                            and not data_str.startswith("session_id:")
+                            and not data_str.startswith("audio_url:")
+                        ):
+                            # LLM服务已经对内容进行了base64编码，需要解码
+                            decoded = base64.b64decode(data_str).decode("utf-8")
+                            # 异步调用TTS处理，不阻塞文本流
+                            task = asyncio.create_task(tool_extractor.process_text_chunk(decoded))
+                            processing_tasks.append(task)
                     except Exception as e:
-                        logger.error(f"[API Server] 流式数据解析错误: {e}")
+                        logger.error(f"[API Server] 流式文本切割器处理错误: {e}")
 
                 yield chunk
 
-            # ====== 流式处理完成 ======
+            # 处理完成
 
             # V19: 如果请求返回音频，在这里生成并返回音频URL
             if request.return_audio and complete_text:
                 try:
                     logger.info(f"[API Server V19] 生成音频，文本长度: {len(complete_text)}")
 
-                    from voice.tts_wrapper import generate_speech_safe
+                    # 使用voice_integration生成音频（支持GPT-SoVITS）
+                    from voice.output.voice_integration import VoiceIntegration
 
-                    tts_voice = get_config().voice_realtime.tts_voice or "zh-CN-XiaoyiNeural"
-                    audio_file = generate_speech_safe(
-                        text=complete_text, voice=tts_voice, response_format="mp3", speed=1.0
-                    )
+                    voice_integration = VoiceIntegration()
 
-                    try:
-                        from voice.output.voice_integration import get_voice_integration
+                    # 生成音频数据
+                    audio_data = voice_integration._generate_audio_sync(complete_text)
 
-                        voice_integration = get_voice_integration()
-                        voice_integration.receive_audio_url(audio_file)
-                        logger.info(f"[API Server V19] 音频已直接播放: {audio_file}")
-                    except Exception as e:
-                        logger.error(f"[API Server V19] 音频播放失败: {e}")
-                        yield f"data: audio_url: {audio_file}\n\n"
+                    if not audio_data:
+                        logger.warning(f"[API Server V19] 语音生成返回空数据")
+                        return
+
+                    # 保存音频文件
+                    import uuid
+
+                    temp_dir = "logs/audio_temp"
+                    os.makedirs(temp_dir, exist_ok=True)
+                    audio_file = os.path.join(temp_dir, f"tts_{uuid.uuid4().hex}.mp3")
+
+                    with open(audio_file, "wb") as f:
+                        f.write(audio_data)
+
+                    logger.info(f"[API Server V19] 音频生成成功: {audio_file}, 大小: {len(audio_data)} bytes")
+
+                    # 总是返回audio_url给客户端，让客户端决定是否播放
+                    yield f"data: audio_url: {audio_file}\n\n"
+                    logger.info(f"[API Server V19] 音频URL已返回给客户端: {audio_file}")
+
+                    # 播放给UI端（电脑端）
+                    # QQ消息和非QQ消息都播放给电脑端，让两边都能听到
+                    is_tool_callback = request.skip_intent_analysis or ("[工具结果]" in complete_text)
+                    if not is_tool_callback:
+                        try:
+                            voice_integration.receive_audio_url(audio_file)
+                            logger.info(f"[API Server V19] 音频已发送到UI端: {audio_file}")
+                        except Exception as e:
+                            logger.error(f"[API Server V19] UI端音频播放失败: {e}")
+                    else:
+                        reason = "工具回调" if is_tool_callback else "其他"
+                        logger.info(f"[API Server V19] {reason}模式，跳过UI端音频播放")
 
                 except Exception as e:
                     logger.error(f"[API Server V19] 音频生成失败: {e}")
+                    # traceback已经在文件顶部导入，直接使用
                     traceback.print_exc()
 
-            # 完成流式文本切割器处理（最终轮）
-            if tool_extractor and not request.return_audio:
+            # 非流式模式：通过voice_integration的receive_final_text处理完整文本
+            if voice_integration and not request.stream:
                 try:
+                    logger.info(f"[API Server] 非流式模式，发送完整文本到语音系统: {len(complete_text)}字符")
+                    voice_integration.receive_final_text(complete_text)
+                except Exception as e:
+                    logger.error(f"[API Server] 非流式语音处理失败: {e}")
+
+            # 完成流式文本切割器处理（仅流式模式）
+            if tool_extractor and request.stream:
+                try:
+                    # 1. 等待所有文本块处理任务完成（确保文本完整累积）
+                    if processing_tasks:
+                        await asyncio.gather(*processing_tasks, return_exceptions=True)
+                    # 2. 将剩余文本发送到voice_integration中的缓冲区
                     await tool_extractor.finish_processing()
+                    pass
                 except Exception as e:
                     print(f"流式文本切割器完成处理错误: {e}")
 
-            # 完成语音处理（最终轮）
-            if voice_integration and not request.return_audio:
+            # 完成语音处理（仅流式模式）
+            if voice_integration and request.stream:  # 非流式模式已在前面处理
                 try:
-                    threading.Thread(
-                        target=voice_integration.finish_processing,
-                        daemon=True,
-                    ).start()
+                    threading.Thread(target=voice_integration.finish_processing, daemon=True).start()
                 except Exception as e:
                     print(f"语音集成完成处理错误: {e}")
 
-            # 获取完整文本用于保存
+            # 流式处理完成后，获取完整文本用于保存
             complete_response = ""
             if tool_extractor:
                 try:
+                    # 获取完整文本内容
                     complete_response = tool_extractor.get_complete_text()
                 except Exception as e:
                     print(f"获取完整响应文本失败: {e}")
             elif request.return_audio:
+                # V19: 如果是return_audio模式，使用累积的文本
                 complete_response = complete_text
 
-            # fallback: 如果 tool_extractor 没有累积到文本，使用最后一轮的 current_round_text
-            if not complete_response and current_round_text:
-                complete_response = current_round_text
-
             # 统一保存对话历史与日志
-            _save_conversation_and_logs(session_id, user_message, complete_response)
+            _save_conversation_and_logs(session_id, request.message, complete_response)
 
-            # 运行时压缩成功时，在会话末尾追加 info 标记
-            # 该标记持久化到磁盘，下次启动用于判断上一个会话是否已被压缩
-            if was_compressed:
-                message_manager.add_message(session_id, "info", "【已压缩上下文】")
+            # 在用户消息保存到历史后触发后台意图分析（除非明确跳过）
+            if not request.skip_intent_analysis:
+                _trigger_background_analysis(session_id)
 
-            # [DONE] 信号已由 llm_service.stream_chat_with_context 发送，无需重复
+            yield "data: [DONE]\n\n"
 
         except Exception as e:
             print(f"流式对话处理错误: {e}")
+            # 使用顶部导入的traceback
             traceback.print_exc()
-            yield f"data: error:{str(e)}\n\n"
+            yield f"data: 错误: {str(e)}\n\n"
 
     return StreamingResponse(
         generate_response(),
@@ -1102,42 +752,12 @@ async def chat_stream(request: ChatRequest):
     )
 
 
-@app.api_route("/tools/search", methods=["GET", "POST"])
-async def proxy_search(request: Request):
-    """Brave Search 兼容代理 → NagaModel /v1/tools/search"""
-    if not naga_auth.is_authenticated():
-        raise HTTPException(status_code=401, detail="未登录 NagaModel")
-
-    if request.method == "GET":
-        params = dict(request.query_params)
-    else:
-        params = await request.json()
-
-    import httpx
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            naga_auth.NAGA_MODEL_URL + "/tools/search",
-            json=params,
-            headers={"Authorization": f"Bearer {naga_auth.get_access_token()}"},
-            timeout=30,
-        )
-    return resp.json()
-
-
 @app.get("/memory/stats")
 async def get_memory_stats():
     """获取记忆统计信息"""
 
     try:
-        # 优先使用远程 NagaMemory 服务
-        from summer_memory.memory_client import get_remote_memory_client
-
-        remote = get_remote_memory_client()
-        if remote is not None:
-            stats = await remote.get_stats()
-            return {"status": "success", "memory_stats": stats}
-
-        # 回退到本地 summer_memory
+        # 记忆系统现在由main.py直接管理
         try:
             from summer_memory.memory_manager import memory_manager
 
@@ -1152,306 +772,6 @@ async def get_memory_stats():
         print(f"获取记忆统计错误: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"获取记忆统计失败: {str(e)}")
-
-
-# ============ MCP Server 代理 ============
-# [已禁用] MCP Server 已从 main.py 启动流程中移除，旧代理端点调用 _call_mcpserver 必定 503
-# @app.get("/mcp/status")
-# async def get_mcp_status_proxy():
-#     """代理 MCP Server 状态查询"""
-#     return await _call_mcpserver("GET", "/status")
-#
-# @app.get("/mcp/tasks")
-# async def get_mcp_tasks_proxy(status: Optional[str] = None):
-#     """代理 MCP 任务列表"""
-#     params = {"status": status} if status else None
-#     return await _call_mcpserver("GET", "/tasks", params=params)
-
-
-@app.get("/mcp/status")
-async def get_mcp_status_offline():
-    """MCP Server 未启动时返回离线状态，避免前端 503"""
-    from datetime import datetime
-
-    return {
-        "server": "offline",
-        "timestamp": datetime.now().isoformat(),
-        "tasks": {"total": 0, "active": 0, "completed": 0, "failed": 0},
-    }
-
-
-@app.get("/mcp/tasks")
-async def get_mcp_tasks_offline(status: Optional[str] = None):
-    """MCP Server 未启动时返回空任务列表，避免前端 503"""
-    return {"tasks": [], "total": 0}
-
-
-# ============ MCP 服务列表 & 导入 ============
-
-
-def _load_mcporter_config() -> Dict[str, Any]:
-    """读取 ~/.mcporter/config.json，不存在或格式错误时返回空 dict"""
-    if not MCPORTER_CONFIG_PATH.exists():
-        return {}
-    try:
-        return json.loads(MCPORTER_CONFIG_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _check_agent_available(manifest: Dict[str, Any]) -> bool:
-    """检查内置 agent 模块是否可导入"""
-    entry = manifest.get("entryPoint", {})
-    module_path = entry.get("module", "")
-    if not module_path:
-        return False
-    try:
-        __import__(module_path)
-        return True
-    except Exception as e:
-        logger.warning(f"MCP 模块导入失败 {module_path}: {e}")
-        return False
-
-
-@app.get("/mcp/services")
-def get_mcp_services():
-    """列出所有 MCP 服务并检查可用性（同步端点，由 FastAPI 在线程池中执行）"""
-    services: List[Dict[str, Any]] = []
-
-    # 1. 内置 agent（扫描 mcpserver 下所有 agent-manifest.json，与 mcp_registry 一致）
-    mcpserver_dir = Path(__file__).resolve().parent.parent / "mcpserver"
-    if not mcpserver_dir.exists():
-        logger.warning(f"MCP 目录不存在: {mcpserver_dir}")
-    for manifest_path in sorted(mcpserver_dir.glob("**/agent-manifest.json")):
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if manifest.get("agentType") != "mcp":
-            continue
-        available = _check_agent_available(manifest)
-        services.append({
-            "name": manifest.get("name", manifest_path.parent.name),
-            "display_name": manifest.get("displayName", manifest.get("name", "")),
-            "description": manifest.get("description", ""),
-            "source": "builtin",
-            "available": available,
-            "enabled": True,
-        })
-
-    # 2. mcporter 外部配置（~/.mcporter/config.json 中的 mcpServers）
-    mcporter_config = _load_mcporter_config()
-    for name, cfg in mcporter_config.get("mcpServers", {}).items():
-        cmd = cfg.get("command", "")
-        available = shutil.which(cmd) is not None if cmd else False
-        # 提取 meta 字段（以 _ 开头的不属于 MCP 协议本身）
-        display_name = cfg.get("_displayName", name)
-        description = cfg.get("_description", "")
-        disabled = cfg.get("_disabled", False)
-        if not description and cmd:
-            description = f"{cmd} {' '.join(cfg.get('args', []))}"
-        # 构建干净的 config（去掉 _ 开头的 meta 字段）
-        clean_config = {k: v for k, v in cfg.items() if not k.startswith("_")}
-        services.append({
-            "name": name,
-            "display_name": display_name,
-            "description": description,
-            "source": "mcporter",
-            "available": available,
-            "enabled": not disabled,
-            "config": clean_config,
-        })
-
-    return {"status": "success", "services": services}
-
-
-class McpImportRequest(BaseModel):
-    name: str
-    config: Dict[str, Any]
-
-
-@app.post("/mcp/import")
-async def import_mcp_config(request: McpImportRequest):
-    """将 MCP JSON 配置写入 ~/.mcporter/config.json"""
-    MCPORTER_DIR.mkdir(parents=True, exist_ok=True)
-    mcporter_config = _load_mcporter_config()
-    servers = mcporter_config.setdefault("mcpServers", {})
-    servers[request.name] = request.config
-    mcporter_config["mcpServers"] = servers
-    MCPORTER_CONFIG_PATH.write_text(
-        json.dumps(mcporter_config, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"status": "success", "message": f"已添加 MCP 服务: {request.name}"}
-
-
-@app.put("/mcp/services/{name}")
-async def update_mcp_service(name: str, body: Dict[str, Any]):
-    """更新 MCP 服务配置（支持 config / displayName / description / enabled）"""
-    mcporter_config = _load_mcporter_config()
-    servers = mcporter_config.get("mcpServers", {})
-    if name not in servers:
-        raise HTTPException(status_code=404, detail=f"MCP 服务 {name} 不存在")
-    if "config" in body:
-        # 替换整个配置（但保留 meta 字段）
-        meta_keys = {"_displayName", "_description", "_disabled"}
-        old_meta = {k: v for k, v in servers[name].items() if k in meta_keys}
-        servers[name] = {**body["config"], **old_meta}
-    if "displayName" in body:
-        servers[name]["_displayName"] = body["displayName"]
-    if "description" in body:
-        servers[name]["_description"] = body["description"]
-    if "enabled" in body:
-        if body["enabled"]:
-            servers[name].pop("_disabled", None)
-        else:
-            servers[name]["_disabled"] = True
-    mcporter_config["mcpServers"] = servers
-    MCPORTER_CONFIG_PATH.write_text(
-        json.dumps(mcporter_config, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"status": "success", "message": f"已更新 MCP 服务: {name}"}
-
-
-@app.delete("/mcp/services/{name}")
-async def delete_mcp_service(name: str):
-    """删除外部 MCP 服务配置"""
-    mcporter_config = _load_mcporter_config()
-    servers = mcporter_config.get("mcpServers", {})
-    if name not in servers:
-        raise HTTPException(status_code=404, detail=f"MCP 服务 {name} 不存在")
-    del servers[name]
-    mcporter_config["mcpServers"] = servers
-    MCPORTER_CONFIG_PATH.write_text(
-        json.dumps(mcporter_config, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"status": "success", "message": f"已删除 MCP 服务: {name}"}
-
-
-class SkillImportRequest(BaseModel):
-    name: str
-    content: str
-
-
-@app.post("/skills/import")
-async def import_custom_skill(request: SkillImportRequest):
-    """创建自定义技能 SKILL.md"""
-    skill_content = f"""---
-name: {request.name}
-description: 用户自定义技能
-version: 1.0.0
-author: User
-tags:
-  - custom
-enabled: true
----
-
-{request.content}
-"""
-    skill_path = _write_skill_file(request.name, skill_content)
-    return {"status": "success", "message": f"技能已创建: {skill_path}"}
-
-
-@app.get("/memory/quintuples")
-async def get_quintuples():
-    """获取所有五元组 (用于知识图谱可视化)"""
-    try:
-        # 优先使用远程 NagaMemory 服务
-        from summer_memory.memory_client import get_remote_memory_client
-
-        remote = get_remote_memory_client()
-        if remote is not None:
-            result = await remote.get_quintuples(limit=500)
-            quintuples_raw = result.get("quintuples") or result.get("results") or result.get("data") or []
-            # 兼容 NagaMemory 返回格式：可能是 dict 列表或 tuple 列表
-            quintuples = []
-            for q in quintuples_raw:
-                if isinstance(q, dict):
-                    quintuples.append({
-                        "subject": q.get("subject", ""),
-                        "subject_type": q.get("subject_type", ""),
-                        "predicate": q.get("predicate", q.get("relation", "")),
-                        "object": q.get("object", ""),
-                        "object_type": q.get("object_type", ""),
-                    })
-                elif isinstance(q, (list, tuple)) and len(q) >= 5:
-                    quintuples.append({
-                        "subject": q[0], "subject_type": q[1],
-                        "predicate": q[2], "object": q[3], "object_type": q[4],
-                    })
-            return {"status": "success", "quintuples": quintuples, "count": len(quintuples)}
-
-        # 回退到本地 summer_memory
-        from summer_memory.quintuple_graph import get_all_quintuples
-
-        quintuples = get_all_quintuples()  # returns set[tuple]
-        return {
-            "status": "success",
-            "quintuples": [
-                {"subject": q[0], "subject_type": q[1], "predicate": q[2], "object": q[3], "object_type": q[4]}
-                for q in quintuples
-            ],
-            "count": len(quintuples),
-        }
-    except ImportError:
-        return {"status": "success", "quintuples": [], "count": 0, "message": "记忆系统模块未找到"}
-    except Exception as e:
-        logger.error(f"获取五元组错误: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"获取五元组失败: {str(e)}")
-
-
-@app.get("/memory/quintuples/search")
-async def search_quintuples(keywords: str = ""):
-    """按关键词搜索五元组"""
-    try:
-        keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
-        if not keyword_list:
-            raise HTTPException(status_code=400, detail="请提供搜索关键词")
-
-        # 优先使用远程 NagaMemory 服务
-        from summer_memory.memory_client import get_remote_memory_client
-
-        remote = get_remote_memory_client()
-        if remote is not None:
-            result = await remote.query_by_keywords(keyword_list)
-            quintuples_raw = result.get("quintuples") or result.get("results") or result.get("data") or []
-            quintuples = []
-            for q in quintuples_raw:
-                if isinstance(q, dict):
-                    quintuples.append({
-                        "subject": q.get("subject", ""),
-                        "subject_type": q.get("subject_type", ""),
-                        "predicate": q.get("predicate", q.get("relation", "")),
-                        "object": q.get("object", ""),
-                        "object_type": q.get("object_type", ""),
-                    })
-                elif isinstance(q, (list, tuple)) and len(q) >= 5:
-                    quintuples.append({
-                        "subject": q[0], "subject_type": q[1],
-                        "predicate": q[2], "object": q[3], "object_type": q[4],
-                    })
-            return {"status": "success", "quintuples": quintuples, "count": len(quintuples)}
-
-        # 回退到本地 summer_memory
-        from summer_memory.quintuple_graph import query_graph_by_keywords
-
-        results = query_graph_by_keywords(keyword_list)
-        return {
-            "status": "success",
-            "quintuples": [
-                {"subject": q[0], "subject_type": q[1], "predicate": q[2], "object": q[3], "object_type": q[4]}
-                for q in results
-            ],
-            "count": len(results),
-        }
-    except ImportError:
-        return {"status": "success", "quintuples": [], "count": 0, "message": "记忆系统模块未找到"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"搜索五元组错误: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"搜索五元组失败: {str(e)}")
 
 
 @app.get("/sessions")
@@ -1482,7 +802,6 @@ async def get_session_detail(session_id: str):
 async def delete_session(session_id: str):
     """删除指定会话 - 委托给message_manager"""
     try:
-        _vlm_sessions.discard(session_id)
         return message_manager.delete_session_api(session_id)
     except Exception as e:
         if "会话不存在" in str(e):
@@ -1496,7 +815,6 @@ async def delete_session(session_id: str):
 async def clear_all_sessions():
     """清空所有会话 - 委托给message_manager"""
     try:
-        _vlm_sessions.clear()
         return message_manager.clear_all_sessions_api()
     except Exception as e:
         print(f"清空会话错误: {e}")
@@ -1535,91 +853,527 @@ async def upload_document(file: UploadFile = File(...), description: str = Form(
         raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
 
 
-@app.post("/upload/parse")
-async def upload_parse(file: UploadFile = File(...)):
-    """上传并解析文档内容（支持 .docx / .xlsx / .txt）"""
-    import tempfile
-    filename = file.filename or "unknown"
-    suffix = Path(filename).suffix.lower()
+@app.post("/qq/analyze_intent")
+async def qq_analyze_intent(request: QQIntentAnalysisRequest):
+    """
+    QQ专用意图分析接口 - 同步执行工具调用并返回结果
 
-    if suffix not in (".docx", ".xlsx", ".txt", ".csv", ".md"):
-        raise HTTPException(status_code=400, detail=f"不支持的文件格式: {suffix}，支持 .docx / .xlsx / .txt / .csv / .md")
+    这个接口专为QQ聊天设计，提供同步的工具调用机制：
+    1. 执行意图分析，识别需要调用的MCP工具
+    2. 同步等待工具执行完成
+    3. 直接返回工具执行结果
 
-    # 写入临时文件
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        tmp_path = Path(tmp.name)
+    Args:
+        request: 包含session_id、message和ai_response的请求
 
+    Returns:
+        工具执行结果
+    """
     try:
-        if suffix == ".docx":
-            import importlib.util
-            _docx_spec = importlib.util.spec_from_file_location(
-                "docx_extract", Path(__file__).parent / "skills_templates" / "office-docs" / "tools" / "docx_extract.py"
+        logger.info(f"[QQ分析] 收到意图分析请求，会话: {request.session_id}")
+
+        # 保存对话到会话历史（使用批量添加避免中间截断）
+        message_manager.add_message_pair(request.session_id, request.message, request.ai_response)
+
+        # 获取最近对话历史
+        from system.background_analyzer import get_background_analyzer
+        from system.config import config
+
+        background_analyzer = get_background_analyzer()
+
+        # 获取所有消息，然后取最后N条，确保包含当前对话
+        all_messages = message_manager.get_messages(request.session_id)
+        intent_rounds = getattr(config.api, "intent_analysis_rounds", config.api.max_history_rounds)
+        max_messages = intent_rounds * 2
+        recent_messages = all_messages[-max_messages:] if len(all_messages) > max_messages else all_messages
+
+        # 调试：打印会话中的消息数量和最近消息数量
+        logger.info(f"[QQ分析] 会话总消息数: {len(all_messages)}, 获取最近消息数: {len(recent_messages)}")
+        if recent_messages:
+            logger.info(f"[QQ分析] 最早消息: {recent_messages[0]['content'][:50]}...")
+            logger.info(f"[QQ分析] 最新消息: {recent_messages[-1]['content'][:50]}...")
+            # 打印最后5条消息的详细内容
+            logger.info(f"[QQ分析] 最后5条消息:")
+            for i, msg in enumerate(recent_messages[-5:]):
+                role = msg.get('role', 'unknown')
+                content_preview = msg.get('content', '')[:60].replace('\n', ' ')
+                logger.info(f"  {i+1}. [{role}] {content_preview}...")
+
+        logger.info(f"[QQ分析] 开始分析对话...")
+
+        # 执行意图分析（同步等待工具结果）
+        analysis = await _analyze_intent_sync(recent_messages, request.session_id)
+
+        if analysis and analysis.get("tool_calls"):
+            # 找到了工具调用，同步执行并等待结果
+            logger.info(f"[QQ分析] 发现 {len(analysis['tool_calls'])} 个工具调用，开始执行...")
+
+            # 同步执行MCP工具调用，传递QQ相关参数和图片路径
+            tool_result = await _execute_mcp_tool_sync(
+                analysis["tool_calls"],
+                request.session_id,
+                request.sender_id,
+                request.message_type,
+                request.group_id,
+                request.image_path,
             )
-            _docx_mod = importlib.util.module_from_spec(_docx_spec)
-            _docx_spec.loader.exec_module(_docx_mod)
-            lines = _docx_mod.extract_docx_text(tmp_path)
-            content = "\n".join(lines)
-        elif suffix == ".xlsx":
-            import importlib.util, zipfile as _zf
-            _xlsx_spec = importlib.util.spec_from_file_location(
-                "xlsx_extract", Path(__file__).parent / "skills_templates" / "office-docs" / "tools" / "xlsx_extract.py"
-            )
-            _xlsx_mod = importlib.util.module_from_spec(_xlsx_spec)
-            _xlsx_spec.loader.exec_module(_xlsx_mod)
-            with _zf.ZipFile(tmp_path, "r") as archive:
-                shared_strings = _xlsx_mod._load_shared_strings(archive)
-                sheets = _xlsx_mod._load_sheet_targets(archive)
-                parts = []
-                for name, path in sheets:
-                    rows = _xlsx_mod._parse_sheet(archive, path, shared_strings, max_rows=500)
-                    parts.append(f"## Sheet: {name}\n{_xlsx_mod._format_sheet_csv(rows, ',')}")
-                content = "\n".join(parts)
+
+            if tool_result:
+                return {
+                    "status": "success",
+                    "tool_executed": True,
+                    "tool_name": tool_result.get("tool_name", "未知"),
+                    "result": tool_result.get("result", ""),
+                    "success": tool_result.get("success", True),
+                }
+            else:
+                return {"status": "success", "tool_executed": False, "message": "工具执行失败或超时"}
+        elif analysis and analysis.get("no_tool"):
+            # 检测到无工具调用（闲聊/情感交流）
+            logger.info(f"[QQ分析] 无工具调用，AI直接回复即可")
+            return {
+                "status": "success",
+                "tool_executed": False,
+                "no_tool": True,
+                "output_mode": analysis.get("output_mode", "normal"),
+                "reply_style": analysis.get("reply_style", "helpful"),
+                "message": "无需工具调用"
+            }
         else:
-            # txt / csv / md 直接读取
-            content = tmp_path.read_text(encoding="utf-8", errors="replace")
+            # 没有发现工具调用
+            return {"status": "success", "tool_executed": False, "message": "未发现需要执行的工具"}
 
-        # 截断过长内容
-        max_chars = 50000
-        truncated = len(content) > max_chars
-        if truncated:
-            content = content[:max_chars]
-
-        return {
-            "status": "success",
-            "filename": filename,
-            "content": content,
-            "truncated": truncated,
-            "char_count": len(content),
-        }
     except Exception as e:
-        logger.error(f"文档解析失败: {e}")
-        raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        logger.error(f"[QQ分析] 意图分析失败: {e}", exc_info=True)
+        return {"status": "error", "tool_executed": False, "message": str(e)}
 
 
-@app.get("/update/latest")
-async def proxy_update_check(platform: str = "windows"):
-    """代理更新检查请求，避免前端直接暴露服务器地址"""
-    import httpx
+async def _analyze_intent_sync(messages: List[Dict[str, str]], session_id: str) -> Optional[Dict]:
+    """同步执行意图分析"""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{naga_auth.BUSINESS_URL}/api/app/NagaAgent/latest",
-                params={"platform": platform},
+        from system.background_analyzer import get_background_analyzer
+
+        background_analyzer = get_background_analyzer()
+
+        # 使用内部的analyzer直接执行分析（不触发工具调度）
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+
+        try:
+            analysis = await asyncio.wait_for(
+                loop.run_in_executor(None, background_analyzer.analyzer.analyze, messages), timeout=30.0
             )
-            if resp.status_code == 404:
-                return {"has_update": False}
-            resp.raise_for_status()
-            data = resp.json()
-            # 将相对下载路径拼成完整URL
-            if data.get("download_url"):
-                data["download_url"] = f"{naga_auth.BUSINESS_URL}{data['download_url']}"
-            return data
+            logger.info(f"[QQ分析] 意图分析完成: {analysis.get('tool_calls', [])}")
+
+            # 检查是否为无工具调用情况（agentType: "none"）
+            if analysis.get('tool_calls'):
+                tool_call = analysis['tool_calls'][0]
+                if tool_call.get('agentType') == 'none':
+                    logger.info(f"[QQ分析] 检测到无工具调用，输出模式: {tool_call.get('output_mode')}, 回复风格: {tool_call.get('reply_style')}")
+                    # 返回分析结果，但标记为不执行工具
+                    return {
+                        'tool_calls': [],
+                        'no_tool': True,
+                        'output_mode': tool_call.get('output_mode', 'normal'),
+                        'reply_style': tool_call.get('reply_style', 'helpful')
+                    }
+
+            return analysis
+        except asyncio.TimeoutError:
+            logger.error(f"[QQ分析] 意图分析超时")
+            return None
+        except Exception as e:
+            logger.error(f"[QQ分析] 意图分析失败: {e}")
+            return None
+
     except Exception as e:
-        logger.warning(f"更新检查失败: {e}")
-        return {"has_update": False}
+        logger.error(f"[QQ分析] 分析意图失败: {e}")
+        return None
+
+
+@app.post("/qq/send_media")
+async def qq_send_media(request: dict):
+    """发送媒体消息（图片/视频）到QQ"""
+    try:
+        sender_id = request.get("sender_id")
+        message_type = request.get("message_type", "private")
+        group_id = request.get("group_id")
+        file_path = request.get("file_path")
+        media_type = request.get("media_type", "image")
+
+        if not sender_id or not file_path:
+            return {"status": "error", "message": "缺少必要参数"}
+
+        # 获取 MCP 服务
+        from mcpserver.mcp_registry import get_service_info
+
+        service_info = get_service_info("QQ/微信集成")
+        if not service_info:
+            return {"status": "error", "message": "QQ服务未注册"}
+
+        agent = service_info.get("instance")
+        if not agent or not hasattr(agent, "message_listener"):
+            return {"status": "error", "message": "QQ服务未初始化或缺少message_listener"}
+
+        message_listener = agent.message_listener
+        if not message_listener:
+            return {"status": "error", "message": "message_listener未初始化"}
+
+        # 使用message_listener发送媒体消息
+        try:
+            await message_listener._send_qq_reply(message_type, sender_id, group_id, file_path, media_type)
+            logger.info(f"[QQ发送媒体] 成功发送 {media_type} 到 {message_type} {sender_id}: {file_path}")
+            return {"status": "success", "message": "媒体发送成功"}
+        except Exception as send_error:
+            logger.error(f"[QQ发送媒体] 发送失败: {send_error}", exc_info=True)
+            return {"status": "error", "message": f"发送失败: {str(send_error)}"}
+
+    except Exception as e:
+        logger.error(f"[QQ发送媒体] 失败: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+async def _execute_mcp_tool_sync(
+    tool_calls: List[Dict[str, Any]],
+    session_id: str,
+    sender_id: Optional[str] = None,
+    message_type: str = "private",
+    group_id: Optional[str] = None,
+    image_path: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """同步执行MCP工具调用 - 通过MCP服务器API调用，支持批量执行"""
+    try:
+        if not tool_calls:
+            return None
+
+        # 🔄 支持批量执行 - 复合操作处理
+        if len(tool_calls) > 1:
+            logger.info(f"[批量MCP] 检测到复合操作，共 {len(tool_calls)} 个步骤")
+            return await _execute_batch_mcp_tools(
+                tool_calls, session_id, sender_id, message_type, group_id, image_path
+            )
+
+        # 单个工具调用（保持向后兼容）
+        tool_call = tool_calls[0]
+        service_name = tool_call.get("service_name")
+        tool_name = tool_call.get("tool_name")
+
+        # 获取参数 - 兼容两种格式:
+        # 1. 标准格式: {"parameters": {"prompt": "..."}}
+        # 2. 简化格式(意图分析器): {"param_name": "...", "tool_name": "..."}
+        parameters = tool_call.get("parameters", {})
+
+        # 如果parameters为空,检查tool_call中是否有直接的参数字段
+        if not parameters:
+            parameters = {}
+            for key, value in tool_call.items():
+                if key not in ["agentType", "service_name", "tool_name", "parameters"]:
+                    parameters[key] = value
+
+        logger.info(
+            f"[QQ工具] 执行MCP工具: {service_name}.{tool_name}, 原始参数: {list(tool_call.keys())}, 处理后参数: {list(parameters.keys())}"
+        )
+
+        # 智能参数映射：根据工具类型映射不同的参数字段
+        # 系统控制服务：param_name -> command
+        if service_name == "系统控制服务" and tool_name == "command":
+            if "param_name" in parameters and "command" not in parameters:
+                parameters["command"] = parameters.pop("param_name")
+                logger.info(f"[QQ工具] 参数映射: param_name -> command = {parameters['command']}")
+        # 应用启动服务：param_name -> app
+        elif service_name == "应用启动服务" and tool_name == "启动应用":
+            if "param_name" in parameters and "app" not in parameters:
+                parameters["app"] = parameters.pop("param_name")
+                logger.info(f"[QQ工具] 参数映射: param_name -> app = {parameters['app']}")
+        # QQ点赞工具：直接调用以传递回调函数
+        elif service_name == "Undefined工具集" and tool_name == "qq_like":
+            # 直接调用 AgentUndefined，绕过 MCP 调度器，以便传递 context
+            from mcpserver.mcp_registry import get_service_info
+
+            service_info = get_service_info("Undefined工具集")
+            if service_info:
+                agent = service_info.get("instance")
+                if agent:
+                    # 构建QQ回调函数
+                    async def send_like_callback(user_id: int, times: int = 1):
+                        try:
+                            logger.info(f"[QQ工具 send_like_callback] 点赞: user_id={user_id}, times={times}")
+                            # 获取QQ adapter并执行点赞
+                            qq_service = get_service_info("QQ/微信集成")
+                            if qq_service:
+                                qq_agent = qq_service.get("instance")
+                                if qq_agent and hasattr(qq_agent, 'qq_adapter'):
+                                    await qq_agent.qq_adapter.send_like(user_id, times)
+                                    logger.info(f"[QQ工具 send_like_callback] 点赞成功")
+                        except Exception as e:
+                            logger.error(f"[QQ工具 send_like_callback] 失败: {e}", exc_info=True)
+
+                    tool_context = {"send_like_callback": send_like_callback}
+                    # 参数映射: user_id -> target_user_id
+                    if "user_id" in parameters:
+                        parameters["target_user_id"] = parameters.pop("user_id")
+                    result = await agent.call_tool(tool_name, parameters)
+                    logger.info(f"[QQ工具] qq_like直接调用结果: {result[:100]}...")
+                    return {"tool_name": tool_name, "result": result, "success": True}
+        # 绘图工具：param_name -> prompt
+        elif tool_name in ["ai_draw_one", "local_ai_draw", "render_and_send_image"]:
+            if sender_id:
+                parameters["target_id"] = int(sender_id)
+            parameters["message_type"] = message_type
+            if group_id:
+                parameters["group_id"] = int(group_id)
+            logger.info(f"[QQ工具] 为绘图工具添加QQ参数: target_id={sender_id}, message_type={message_type}")
+
+            if "param_name" in parameters and "prompt" not in parameters:
+                parameters["prompt"] = parameters.pop("param_name")
+                logger.info(f"[QQ工具] 参数映射: param_name -> prompt = {parameters['prompt'][:50]}...")
+            # 同时兼容旧的 parameters 格式
+            if "parameters" in parameters and isinstance(parameters["parameters"], dict):
+                inner_params = parameters["parameters"]
+                if "param_name" in inner_params:
+                    inner_params["prompt"] = inner_params.pop("param_name")
+                # 将内层参数提升到外层
+                parameters.update(inner_params)
+                parameters.pop("parameters")
+
+            # 直接调用 AgentUndefined，绕过 MCP 调度器，以便传递 context
+            from mcpserver.mcp_registry import get_service_info
+
+            service_info = get_service_info("Undefined工具集")
+            if service_info:
+                agent = service_info.get("instance")
+                if agent:
+                    # 构建 send_image_callback
+                    async def send_image_callback(target_id: int, msg_type: str, file_path: str):
+                        try:
+                            logger.info(
+                                f"[QQ工具 send_image_callback] 发送图片: target_id={target_id}, msg_type={msg_type}, file_path={file_path}"
+                            )
+                            import httpx
+                            from system.config import get_server_port
+
+                            http_url = f"http://localhost:{get_server_port('api_server')}/qq/send_media"
+                            payload = {
+                                "sender_id": str(target_id),
+                                "message_type": msg_type,
+                                "group_id": str(group_id) if group_id else None,
+                                "file_path": file_path,
+                                "media_type": "image",
+                            }
+                            async with httpx.AsyncClient(timeout=10.0) as client:
+                                response = await client.post(http_url, json=payload)
+                                logger.info(f"[QQ工具 send_image_callback] 响应: {response.status_code}")
+                        except Exception as e:
+                            logger.error(f"[QQ工具 send_image_callback] 失败: {e}", exc_info=True)
+
+                    tool_context = {"send_image_callback": send_image_callback}
+                    result = await agent.call_tool(tool_name, parameters, context=tool_context)
+
+                    # 安全地处理result日志（处理dict和str类型）
+                    if isinstance(result, dict):
+                        result_str = str(result)
+                        logger.info(f"[QQ工具] 直接调用结果: {result_str[:100]}...")
+                    elif isinstance(result, str):
+                        logger.info(f"[QQ工具] 直接调用结果: {result[:100]}...")
+                    else:
+                        logger.info(f"[QQ工具] 直接调用结果: {type(result)}...")
+                    return {"tool_name": tool_name, "result": result, "success": True}
+
+        # 为视觉识别工具处理图片路径
+        if tool_name == "vision_pipeline":
+            # 直接使用传入的 image_path 参数（如果有）
+            if image_path:
+                parameters["filename"] = image_path
+                logger.info(f"[QQ工具] 为vision_pipeline添加图片路径: {parameters['filename']}")
+            else:
+                # 如果没有提供 image_path，从会话历史中查找（兼容旧逻辑）
+                try:
+                    all_messages = message_manager.get_recent_messages(session_id, count=10)
+                    for msg in reversed(all_messages):
+                        if msg.get("role") == "user" and "[图片分析]" in msg.get("content", ""):
+                            # 查找最近的图片路径记录（保存在img/temp目录下）
+                            import os
+                            from pathlib import Path
+
+                            temp_dir = Path.cwd() / "img" / "temp"
+                            if temp_dir.exists():
+                                # 获取最新的图片文件
+                                image_files = list(temp_dir.glob(f"qq_{sender_id}_*.jpg")) + list(
+                                    temp_dir.glob(f"qq_{sender_id}_*.png")
+                                )
+                                if image_files:
+                                    # 按修改时间排序，取最新的
+                                    latest_image = max(image_files, key=lambda p: p.stat().st_mtime)
+                                    parameters["filename"] = str(latest_image)
+                                    logger.info(
+                                        f"[QQ工具] 为vision_pipeline从历史添加图片路径: {parameters['filename']}"
+                                    )
+                            break
+                except Exception as e:
+                    logger.warning(f"[QQ工具] 从历史获取图片路径失败: {e}")
+
+            # 参数映射: param_name -> user_content (兼容意图分析器的输出)
+            if "param_name" in parameters and "user_content" not in parameters:
+                parameters["user_content"] = parameters.pop("param_name")
+                logger.info(f"[QQ工具] 参数映射: param_name -> user_content")
+
+        import httpx
+        from system.config import get_server_port
+        import uuid
+
+        # 构建MCP服务器请求 - 与background_analyzer相同的格式
+        mcp_payload = {
+            "query": f"QQ MCP工具调用: {service_name}.{tool_name}",
+            "tool_calls": [tool_call],
+            "session_id": session_id,
+            "request_id": str(uuid.uuid4()),
+            "skip_callback": True,  # QQ需要同步等待结果
+        }
+
+        mcp_server_url = f"http://localhost:{get_server_port('mcp_server')}/schedule"
+
+        logger.info(f"[QQ工具] 发送MCP请求到: {mcp_server_url}")
+
+        # 增加超时时间到60秒，避免应用启动超时
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(mcp_server_url, json=mcp_payload)
+
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"[QQ工具] MCP请求成功: {result}")
+
+                # 尝试提取工具执行结果
+                if result.get("success"):
+                    tool_result = result.get("result", "")
+
+                    # 如果result是字符串，直接使用
+                    # 如果是字典，尝试提取output/result/message字段
+                    if isinstance(tool_result, dict):
+                        tool_result = tool_result.get(
+                            "output",
+                            tool_result.get(
+                                "result", tool_result.get("message", json.dumps(tool_result, ensure_ascii=False))
+                            ),
+                        )
+
+                    # 确保tool_result不是None或空字符串
+                    if not tool_result or tool_result == "None":
+                        tool_result = ""
+
+                    # 检查工具类型：后台工具不发送结果给用户
+                    should_send = _should_send_result_to_user(tool_name)
+                    logger.info(f"[QQ工具] 工具类型判断: {tool_name} -> should_send={should_send}")
+
+                    if should_send:
+                        # 用户面向工具：返回结果
+                        return {"tool_name": tool_name, "result": str(tool_result), "success": True}
+                    else:
+                        # 后台工具：记录日志，返回空结果（避免发送给用户）
+                        logger.info(f"[QQ工具] 后台工具执行成功，结果已记录到日志: {str(tool_result)[:200]}")
+                        return {"tool_name": tool_name, "result": "", "success": True}
+                else:
+                    error_msg = result.get("error", result.get("message", "执行失败"))
+                    logger.error(f"[QQ工具] MCP执行失败: {error_msg}")
+                    return None
+            else:
+                logger.error(f"[QQ工具] MCP请求失败: {response.status_code} - {response.text}")
+                return None
+
+    except Exception as e:
+        logger.error(f"[QQ工具] 执行MCP工具失败: {e}", exc_info=True)
+        return None
+
+
+async def _execute_batch_mcp_tools(
+    tool_calls: List[Dict[str, Any]],
+    session_id: str,
+    sender_id: Optional[str] = None,
+    message_type: str = "private",
+    group_id: Optional[str] = None,
+    image_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """批量执行MCP工具调用 - 支持复合操作"""
+    import httpx
+    from system.config import get_server_port
+    import uuid
+
+    results = []
+    errors = []
+
+    logger.info(f"[批量MCP] 开始执行 {len(tool_calls)} 个工具调用")
+
+    for i, tool_call in enumerate(tool_calls):
+        try:
+            logger.info(f"[批量MCP] 执行第 {i+1}/{len(tool_calls)} 个工具")
+
+            service_name = tool_call.get("service_name")
+            tool_name = tool_call.get("tool_name")
+
+            # 构建参数（复用现有逻辑）
+            parameters = tool_call.get("parameters", {})
+
+            if not parameters:
+                parameters = {}
+                for key, value in tool_call.items():
+                    if key not in ["agentType", "service_name", "tool_name", "parameters"]:
+                        parameters[key] = value
+
+            # 简化的MCP调用（避免重复复杂的参数处理）
+            mcp_payload = {
+                "query": f"批量MCP {i+1}/{len(tool_calls)}: {service_name}.{tool_name}",
+                "tool_calls": [tool_call],
+                "session_id": session_id,
+                "request_id": str(uuid.uuid4()),
+                "skip_callback": True,
+            }
+
+            mcp_server_url = f"http://localhost:{get_server_port('mcp_server')}/schedule"
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(mcp_server_url, json=mcp_payload)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    # 检查工具类型，过滤后台工具的结果
+                    should_send = _should_send_result_to_user(tool_name)
+                    logger.info(f"[批量MCP] 工具类型判断: {tool_name} -> should_send={should_send}")
+
+                    if should_send:
+                        results.append({
+                            "tool": f"{service_name}.{tool_name}",
+                            "result": result,
+                            "success": True
+                        })
+                    else:
+                        # 后台工具：只记录日志，不添加到返回结果
+                        logger.info(f"[批量MCP] 后台工具已执行: {tool_name}, 结果已记录到日志")
+                    logger.info(f"[批量MCP] 第 {i+1} 个工具执行成功")
+                else:
+                    errors.append(f"工具 {i+1}: HTTP {response.status_code}")
+                    logger.error(f"[批量MCP] 第 {i+1} 个工具执行失败: {response.status_code}")
+
+        except Exception as e:
+            error_msg = f"工具 {i+1}: {str(e)}"
+            errors.append(error_msg)
+            logger.error(f"[批量MCP] 第 {i+1} 个工具执行异常: {e}")
+
+    # 返回批量结果
+    batch_result = {
+        "tool_name": "batch_execution",
+        "result": results,
+        "success": len(errors) == 0,
+        "total": len(tool_calls),
+        "successful": len(results),
+        "failed": len(errors),
+        "errors": errors
+    }
+
+    logger.info(
+        f"[批量MCP] 执行完成: 成功 {len(results)}/{len(tool_calls)}, 失败 {len(errors)}"
+    )
+
+    return batch_result
 
 
 # 挂载LLM服务路由以支持 /llm/chat
@@ -1653,38 +1407,6 @@ async def load_log_context(days: int = 3, max_messages: int = None):
         raise HTTPException(status_code=500, detail=f"加载上下文失败: {str(e)}")
 
 
-# Web前端工具状态轮询存储
-_tool_status_store: Dict[str, Dict] = {"current": {"message": "", "visible": False}}
-
-# Web前端 AgentServer 回复存储（轮询获取）
-_clawdbot_replies: list = []
-
-# Web前端 Live2D 动作队列（轮询获取）
-_live2d_actions: list = []
-
-
-@app.get("/tool_status")
-async def get_tool_status():
-    """获取当前工具调用状态（供Web前端轮询）"""
-    return _tool_status_store.get("current", {"message": "", "visible": False})
-
-
-@app.get("/clawdbot/replies")
-async def get_clawdbot_replies():
-    """获取并清空 AgentServer 待显示回复（供Web前端轮询）"""
-    replies = list(_clawdbot_replies)
-    _clawdbot_replies.clear()
-    return {"replies": replies}
-
-
-@app.get("/live2d/actions")
-async def get_live2d_actions():
-    """获取并清空 Live2D 动作队列（供Web前端轮询）"""
-    actions = list(_live2d_actions)
-    _live2d_actions.clear()
-    return {"actions": actions}
-
-
 @app.post("/tool_notification")
 async def tool_notification(payload: Dict[str, Any]):
     """接收工具调用状态通知，只显示工具调用状态，不显示结果"""
@@ -1692,13 +1414,6 @@ async def tool_notification(payload: Dict[str, Any]):
         session_id = payload.get("session_id")
         tool_calls = payload.get("tool_calls", [])
         message = payload.get("message", "")
-        stage = payload.get("stage", "")
-        auto_hide_ms_raw = payload.get("auto_hide_ms", 0)
-
-        try:
-            auto_hide_ms = int(auto_hide_ms_raw)
-        except (TypeError, ValueError):
-            auto_hide_ms = 0
 
         if not session_id:
             raise HTTPException(400, "缺少session_id")
@@ -1710,27 +1425,14 @@ async def tool_notification(payload: Dict[str, Any]):
             status = tool_call.get("status", "starting")
             logger.info(f"工具调用状态: {tool_name} ({service_name}) - {status}")
 
-        display_message = message
-        if not display_message:
-            if stage == "detecting":
-                display_message = "正在检测工具调用"
-            elif stage == "executing":
-                display_message = f"检测到{len(tool_calls)}个工具调用，执行中"
-            elif stage == "none":
-                display_message = "未检测到工具调用"
-
-        if stage == "hide":
-            _hide_tool_status_in_ui()
-        elif display_message:
-            _emit_tool_status_to_ui(display_message, auto_hide_ms)
+        # 这里可以添加WebSocket通知UI的逻辑，让UI显示工具调用状态
+        # 目前先记录日志，UI可以通过其他方式获取工具调用状态
 
         return {
             "success": True,
             "message": "工具调用状态通知已接收",
             "tool_calls": tool_calls,
-            "display_message": display_message,
-            "stage": stage,
-            "auto_hide_ms": auto_hide_ms,
+            "display_message": message,
         }
 
     except Exception as e:
@@ -1740,7 +1442,20 @@ async def tool_notification(payload: Dict[str, Any]):
 
 @app.post("/tool_result_callback")
 async def tool_result_callback(payload: Dict[str, Any]):
-    """接收MCP工具执行结果回调，让主AI基于原始对话和工具结果重新生成回复"""
+    """接收MCP工具执行结果回调
+    
+    回调处理流程：
+    1. 检测会话类型（QQ会话 或 UI会话）
+    2. 对于QQ会话：解析工具结果并直接发送给QQ用户
+    3. 对于UI会话：仅记录日志，不重复生成回复（前端意识已处理）
+    
+    工具结果格式说明：
+    - Undefined工具：直接返回字符串（MCP Manager会自动包装为 {'success': True, 'result': '...'}）
+    - MCP工具：返回 {'success': True, 'result': '...'} 格式
+    
+    Args:
+        payload: CallbackPayload类型，包含session_id, task_id, result, success等信息
+    """
     try:
         session_id = payload.get("session_id")
         task_id = payload.get("task_id")
@@ -1750,58 +1465,107 @@ async def tool_result_callback(payload: Dict[str, Any]):
         if not session_id:
             raise HTTPException(400, "缺少session_id")
 
-        _emit_tool_status_to_ui("生成工具回调", 0)
+        # 去重检查：如果task_id已处理过，直接返回成功
+        if task_id in _task_callback_cache:
+            logger.info(f"[工具回调] 任务ID已处理过，跳过: {task_id}")
+            return {
+                "success": True,
+                "message": "任务结果已处理（去重）",
+                "task_id": task_id,
+                "session_id": session_id,
+            }
+
+        # 标记任务ID为已处理
+        _task_callback_cache.add(task_id)
 
         logger.info(f"[工具回调] 开始处理工具回调，会话: {session_id}, 任务ID: {task_id}")
         logger.info(f"[工具回调] 回调内容: {result}")
 
         # 获取工具执行结果
-        tool_result = result.get("result", "执行成功") if success else result.get("error", "未知错误")
-        logger.info(f"[工具回调] 工具执行结果: {tool_result}")
+        # 回调格式: {"success": True, "results": [{"tool": "xxx", "success": True, "result": "..."}], "message": "..."}
+        if success and "results" in result and len(result["results"]) > 0:
+            # 从results数组中提取第一个工具的结果
+            tool_result = result["results"][0].get("result", "执行成功")
+            tool_name = result["results"][0].get("tool", "未知工具")
+            logger.info(f"[工具回调] 工具名称: {tool_name}")
+        else:
+            tool_result = result.get("error", "未知错误") if not success else "执行成功"
+            tool_name = "未知工具"
 
-        # 获取原始对话的最后一条用户消息（触发工具调用的消息）
-        session_messages = message_manager.get_messages(session_id)
-        original_user_message = ""
-        for msg in reversed(session_messages):
-            if msg.get("role") == "user":
-                original_user_message = msg.get("content", "")
-                break
+        logger.info(f"[工具回调] 工具执行结果: {str(tool_result)[:200] if len(str(tool_result)) > 200 else str(tool_result)}")
 
-        # 构建包含工具结果的用户消息
-        enhanced_message = f"{original_user_message}\n\n[工具执行结果]: {tool_result}"
-        logger.info(f"[工具回调] 构建增强消息: {enhanced_message[:200]}...")
+        # 解析tool_result，提取实际的结果字符串
+        # 支持两种格式：
+        # 1. 字典格式: {'success': True, 'result': "实际结果字符串"}
+        # 2. 字符串格式: 直接的结果文本
+        if isinstance(tool_result, dict):
+            result_to_send = tool_result.get('result', str(tool_result))
+            logger.debug(f"[工具回调] 字典格式结果解析: keys={list(tool_result.keys())}, result_type={type(tool_result.get('result'))}")
+        else:
+            result_to_send = str(tool_result)
+            logger.debug(f"[工具回调] 字符串格式结果: result_type={type(tool_result)}")
 
-        # 构建对话风格提示词和消息
-        system_prompt = build_system_prompt(include_skills=True)
-        messages = message_manager.build_conversation_messages(
-            session_id=session_id, system_prompt=system_prompt, current_message=enhanced_message
-        )
+        logger.info(f"[工具回调] 准备发送的消息长度: {len(result_to_send)}")
 
-        logger.info("[工具回调] 开始生成工具后回复...")
+        # 判断是否为QQ会话
+        is_qq_session = session_id and session_id.startswith('qq_')
 
-        # 使用LLM服务基于原始对话和工具结果重新生成回复
-        try:
-            llm_service = get_llm_service()
-            response_text = await llm_service.chat_with_context(messages, temperature=0.7)
-            logger.info(f"[工具回调] 工具后回复生成成功，内容: {response_text[:200]}...")
-        except Exception as e:
-            logger.error(f"[工具回调] 调用LLM服务失败: {e}")
-            response_text = f"处理工具结果时出错: {str(e)}"
+        # 判断工具类型：信息搜集和输出类型的工具才需要将结果发送给用户
+        # 其他类型的工具（如记忆、任务、控制等）只记录日志
+        should_send_to_user = _should_send_result_to_user(tool_name)
+        logger.info(f"[工具回调] 工具类型判断: {tool_name} -> should_send_to_user={should_send_to_user}")
 
-        # 只保存AI回复到历史记录（用户消息已在正常对话流程中保存）
-        message_manager.add_message(session_id, "assistant", response_text)
-        logger.info("[工具回调] AI回复已保存到历史")
+        if is_qq_session and should_send_to_user:
+            # QQ会话：直接发送工具结果到QQ
+            try:
+                # 从session_id中提取QQ号和消息类型
+                # 格式: qq_[QQ号]
+                qq_number = session_id.replace('qq_', '')
+                message_type = 'private'
+                group_id = None
 
-        # 保存对话日志到文件
-        message_manager.save_conversation_log(original_user_message, response_text, dev_mode=False)
-        logger.info("[工具回调] 对话日志已保存")
+                logger.info(f"[工具回调] QQ会话检测到，准备发送结果到: {qq_number}")
 
-        # 通过UI通知接口将AI回复发送给UI
-        logger.info("[工具回调] 开始发送AI回复到UI...")
+                # 获取QQ listener
+                from mcpserver.mcp_registry import get_service_info
+                service_info = get_service_info("QQ/微信集成")
+                if service_info:
+                    agent = service_info.get("instance")
+                    if agent and hasattr(agent, "message_listener"):
+                        message_listener = agent.message_listener
+                        if message_listener:
+                            # 直接发送工具结果（确保是字符串）
+                            await message_listener._send_qq_reply(
+                                message_type, qq_number, group_id, result_to_send, 'text'
+                            )
+                            logger.info(f"[工具回调] 工具结果已发送到QQ: {qq_number}, 消息长度: {len(result_to_send)}")
+                        else:
+                            logger.warning(f"[工具回调] QQ message_listener未初始化")
+                    else:
+                        logger.warning(f"[工具回调] QQ服务未初始化或缺少message_listener")
+                else:
+                    logger.warning(f"[工具回调] QQ服务未注册")
+
+            except Exception as e:
+                logger.error(f"[工具回调] 发送工具结果到QQ失败: {e}", exc_info=True)
+        else:
+            # UI会话：只记录工具结果，不重复生成回复（前端意识已处理）
+            if should_send_to_user:
+                logger.info(f"[工具回调] UI会话，用户面向工具结果已记录，前端意识已处理回复")
+            else:
+                logger.info(f"[工具回调] UI会话，后台工具结果已记录到日志，不发送给用户")
+
+        logger.info(f"[工具回调] 工具结果处理完成")
+        return {
+            "success": True,
+            "message": "工具结果已记录",
+            "task_id": task_id,
+            "session_id": session_id,
+        }
+        logger.info(f"[工具回调] UI会话，将AI回复发送给UI...")
         await _notify_ui_refresh(session_id, response_text)
-        _hide_tool_status_in_ui()
 
-        logger.info("[工具回调] 工具结果处理完成，回复已发送到UI")
+        logger.info(f"[工具回调] 工具结果处理完成")
 
         return {
             "success": True,
@@ -1812,7 +1576,6 @@ async def tool_result_callback(payload: Dict[str, Any]):
         }
 
     except Exception as e:
-        _hide_tool_status_in_ui()
         logger.error(f"[工具回调] 工具结果回调处理失败: {e}")
         raise HTTPException(500, f"处理失败: {str(e)}")
 
@@ -1831,10 +1594,17 @@ async def tool_result(payload: Dict[str, Any]):
 
         logger.info(f"工具执行结果: {result}")
 
-        # 如果是工具完成后的AI回复，存储到ClawdBot回复队列供前端轮询
+        # 如果是工具完成后的AI回复，通过信号机制通知UI线程显示
         if notification_type == "tool_completed_with_ai_response" and ai_response:
-            _clawdbot_replies.append(ai_response)
-            logger.info(f"[UI] AI回复已存储到队列，长度: {len(ai_response)}")
+            try:
+                # 使用Qt信号机制在主线程中安全地更新UI
+                from ui.controller.tool_chat import chat
+
+                # 直接发射信号，确保在主线程中执行
+                chat.tool_ai_response_received.emit(ai_response)
+                logger.info(f"[UI] 已通过信号机制通知UI显示AI回复，长度: {len(ai_response)}")
+            except Exception as e:
+                logger.error(f"[UI] 调用UI控制器显示AI回复失败: {e}")
 
         return {"success": True, "message": "工具结果已接收", "result": result, "session_id": session_id}
 
@@ -1880,13 +1650,6 @@ async def ui_notification(payload: Dict[str, Any]):
         session_id = payload.get("session_id")
         action = payload.get("action", "")
         ai_response = payload.get("ai_response", "")
-        status_text = payload.get("status_text", "")
-        auto_hide_ms_raw = payload.get("auto_hide_ms", 0)
-
-        try:
-            auto_hide_ms = int(auto_hide_ms_raw)
-        except (TypeError, ValueError):
-            auto_hide_ms = 0
 
         if not session_id:
             raise HTTPException(400, "缺少session_id")
@@ -1895,31 +1658,16 @@ async def ui_notification(payload: Dict[str, Any]):
 
         # 处理显示工具AI回复的动作
         if action == "show_tool_ai_response" and ai_response:
-            _clawdbot_replies.append(ai_response)
-            logger.info(f"[UI通知] 工具AI回复已存储到队列，长度: {len(ai_response)}")
-            return {"success": True, "message": "AI回复已存储"}
+            try:
+                from ui.controller.tool_chat import chat
 
-        # 处理显示 AgentServer 回复的动作
-        if action == "show_clawdbot_response" and ai_response:
-            _clawdbot_replies.append(ai_response)
-            logger.info(f"[UI通知] AgentServer 回复已存储到队列，长度: {len(ai_response)}")
-            return {"success": True, "message": "AgentServer 回复已存储"}
-
-        # 处理 Live2D 动作
-        if action == "live2d_action":
-            action_name = payload.get("action_name", "")
-            if action_name:
-                _live2d_actions.append(action_name)
-                logger.info(f"[UI通知] Live2D 动作已入队: {action_name}")
-                return {"success": True, "message": f"Live2D 动作 {action_name} 已入队"}
-
-        if action == "show_tool_status" and status_text:
-            _emit_tool_status_to_ui(status_text, auto_hide_ms)
-            return {"success": True, "message": "工具状态已显示"}
-
-        if action == "hide_tool_status":
-            _hide_tool_status_in_ui()
-            return {"success": True, "message": "工具状态已隐藏"}
+                # 直接发射信号，确保在主线程中执行
+                chat.tool_ai_response_received.emit(ai_response)
+                logger.info(f"[UI通知] 已通过信号机制显示工具AI回复，长度: {len(ai_response)}")
+                return {"success": True, "message": "AI回复已显示"}
+            except Exception as e:
+                logger.error(f"[UI通知] 显示工具AI回复失败: {e}")
+                raise HTTPException(500, f"显示AI回复失败: {str(e)}")
 
         return {"success": True, "message": "UI通知已处理"}
 
@@ -1942,9 +1690,10 @@ async def _trigger_chat_stream_no_intent(session_id: str, response_text: str):
             "message": response_text,  # 直接使用AI回复内容，不加标记
             "stream": True,
             "session_id": session_id,
+            "use_self_game": False,
             "disable_tts": False,
             "return_audio": False,
-
+            "skip_intent_analysis": True,  # 关键：跳过意图分析
         }
 
         # 调用现有的流式对话接口
@@ -1963,7 +1712,7 @@ async def _trigger_chat_stream_no_intent(session_id: str, response_text: str):
                             pass
 
                     logger.info(f"[UI发送] AI回复已成功发送到UI: {session_id}")
-                    logger.info("[UI发送] 成功显示到UI")
+                    logger.info(f"[UI发送] 成功显示到UI")
                 else:
                     logger.error(f"[UI发送] 调用流式对话接口失败: {response.status_code}")
 
@@ -1987,7 +1736,7 @@ async def _notify_ui_refresh(session_id: str, response_text: str):
 
         api_url = f"http://localhost:{get_server_port('api_server')}/ui_notification"
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(api_url, json=ui_notification_payload)
             if response.status_code == 200:
                 logger.info(f"[UI通知] AI回复显示通知发送成功: {session_id}")
@@ -1996,16 +1745,6 @@ async def _notify_ui_refresh(session_id: str, response_text: str):
 
     except Exception as e:
         logger.error(f"[UI通知] 通知UI刷新失败: {e}")
-
-
-def _emit_tool_status_to_ui(status_text: str, auto_hide_ms: int = 0) -> None:
-    """更新工具状态存储，前端通过轮询获取"""
-    _tool_status_store["current"] = {"message": status_text, "visible": True}
-
-
-def _hide_tool_status_in_ui() -> None:
-    """隐藏工具状态，前端通过轮询获取"""
-    _tool_status_store["current"] = {"message": "", "visible": False}
 
 
 async def _send_ai_response_directly(session_id: str, response_text: str):
@@ -2018,9 +1757,10 @@ async def _send_ai_response_directly(session_id: str, response_text: str):
             "message": f"[工具结果] {response_text}",  # 添加标记让UI知道这是工具结果
             "stream": False,
             "session_id": session_id,
+            "use_self_game": False,
             "disable_tts": False,
             "return_audio": False,
-
+            "skip_intent_analysis": True,
         }
 
         from system.config import get_server_port

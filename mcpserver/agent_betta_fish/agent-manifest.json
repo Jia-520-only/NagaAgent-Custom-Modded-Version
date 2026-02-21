@@ -1,0 +1,35 @@
+{
+  "displayName": "微舆舆情分析",
+  "version": "1.0.0",
+  "author": "NagaAgent Team",
+  "agentType": "mcp",
+  "description": "多智能体舆情分析系统，支持深度搜索、情感分析、报告生成等功能",
+  "entryPoint": {
+    "module": "mcpserver.agent_betta_fish.betta_fish_agent",
+    "class": "BettaFishAgent"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "舆情分析",
+        "description": "执行舆情深度分析；参数：topic（分析主题，必需）、depth（分析深度，可选：1-5）",
+        "example": "{\"tool_name\":\"舆情分析\",\"topic\":\"武汉大学\",\"depth\":3}"
+      },
+      {
+        "command": "情感分析",
+        "description": "分析文本情感倾向；参数：text（待分析文本，必需）",
+        "example": "{\"tool_name\":\"情感分析\",\"text\":\"今天天气真好，心情很愉快\"}"
+      },
+      {
+        "command": "生成舆情报告",
+        "description": "生成舆情分析报告；参数：topic（主题，必需）、report_type（报告类型，可选：社会/商业/科技）",
+        "example": "{\"tool_name\":\"生成舆情报告\",\"topic\":\"AI技术发展\",\"report_type\":\"科技\"}"
+      },
+      {
+        "command": "全网搜索",
+        "description": "全网搜索相关信息；参数：query（搜索内容，必需）、days（天数范围，可选）",
+        "example": "{\"tool_name\":\"全网搜索\",\"query\":\"人工智能最新进展\",\"days\":7}"
+      }
+    ]
+  }
+}

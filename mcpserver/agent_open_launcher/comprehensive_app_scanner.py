@@ -16,6 +16,19 @@ else:
 class ComprehensiveAppScanner:
     """综合应用扫描器：结合注册表扫描和快捷方式扫描 #"""
     
+    # 应用名称关键词映射表（用于智能匹配）
+    APP_KEYWORD_MAP = {
+        "哔哩哔哩": ["bilibili", "b站", "bilibili_client", "blbl"],
+        "微信": ["wechat", "weixin"],
+        "QQ音乐": ["qqmusic", "qq 音乐", "qqmusic"],
+        "酷狗音乐": ["kugou", "kgmusic"],
+        "网易云音乐": ["netease", "163music", "cloudmusic"],
+        "浏览器": ["chrome", "edge", "firefox", "safari", "browser"],
+        "VSCode": ["vscode", "visual studio code", "code"],
+        "Steam": ["steam"],
+        "Discord": ["discord"],
+    }
+    
     def __init__(self):
         self.apps_cache = []  # 应用缓存 #
         self._scan_completed = False  # 扫描完成标志 #
@@ -295,17 +308,56 @@ class ComprehensiveAppScanner:
         """异步根据名称查找应用，支持智能匹配 #"""
         await self.ensure_scan_completed()
         name_lower = name.lower()
-        
-        # 精确匹配
-        for app in self.apps_cache:
+
+        # 定义应该排除的应用名称关键词
+        EXCLUDED_KEYWORDS = ["卸载", "安装", "uninstall", "install", "setup", "修复", "修复工具"]
+
+        # 先过滤掉包含排除关键词的应用，避免它们被匹配
+        filtered_apps = [
+            app for app in self.apps_cache
+            if not any(excluded_keyword in app["name"].lower() for excluded_keyword in EXCLUDED_KEYWORDS)
+        ]
+
+        # 1. 尝试精确匹配（优先使用过滤后的应用列表）
+        for app in filtered_apps:
             if app["name"].lower() == name_lower:
+                print(f"✅ 精确匹配: '{name}' -> '{app['name']}'")
                 return app
-        
-        # 模糊匹配（包含关系）
-        for app in self.apps_cache:
-            if name_lower in app["name"].lower() or app["name"].lower() in name_lower:
-                return app
-        
+
+        # 2. 尝试关键词映射
+        mapped_keywords = []
+        for app_name, keywords in self.APP_KEYWORD_MAP.items():
+            if name_lower == app_name.lower() or name_lower in [k.lower() for k in keywords]:
+                mapped_keywords.extend(keywords + [app_name.lower()])
+
+        # 如果找到映射的关键词，尝试用这些关键词匹配（只在过滤后的应用列表中）
+        if mapped_keywords:
+            for keyword in mapped_keywords:
+                for app in filtered_apps:
+                    app_name_lower = app["name"].lower()
+                    if keyword in app_name_lower:
+                        # 优先选择名称最短的（避免匹配到"卸载xxx"之类的）
+                        if len(app["name"]) < len(keyword) * 2:
+                            print(f"✅ 通过关键词映射匹配: '{name}' -> '{app['name']}'")
+                            return app
+
+        # 3. 模糊匹配（包含关系），只在过滤后的应用列表中
+        candidates = []
+        for app in filtered_apps:
+            app_name_lower = app["name"].lower()
+            # 模糊匹配
+            if name_lower in app_name_lower:
+                candidates.append(app)
+
+        # 如果有候选应用，选择最匹配的（名称最短的，通常是主应用）
+        if candidates:
+            # 按名称长度排序，优先选择较短的名称（更可能是主应用）
+            candidates.sort(key=lambda x: len(x["name"]))
+            best_match = candidates[0]
+            print(f"✅ 模糊匹配: '{name}' -> '{best_match['name']}'")
+            return best_match
+
+        print(f"❌ 未找到应用: '{name}'")
         return None
     
     async def refresh_apps(self):
@@ -317,7 +369,14 @@ class ComprehensiveAppScanner:
     
     async def get_app_info_for_llm(self) -> Dict:
         """异步获取供LLM选择的应用信息格式 #"""
-        await self.ensure_scan_completed()
+        if self._scan_completed and self.apps_cache:
+            # 使用缓存
+            print(f"📋 使用缓存的应用列表，共 {len(self.apps_cache)} 个应用")
+        else:
+            # 执行扫描（非阻塞模式）
+            print(f"📋 开始扫描应用列表...")
+            await self.ensure_scan_completed()
+            print(f"📋 扫描完成，共 {len(self.apps_cache)} 个应用")
         
         # 直接返回应用名称列表，简化格式
         app_names = [app["name"] for app in self.apps_cache]

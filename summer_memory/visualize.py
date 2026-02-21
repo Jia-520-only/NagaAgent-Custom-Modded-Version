@@ -1,5 +1,6 @@
 from pyvis.network import Network
 import webbrowser
+import matplotlib.pyplot as plt
 from .graph import get_all_triples
 import logging
 

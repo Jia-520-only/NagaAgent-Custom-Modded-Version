@@ -6,7 +6,7 @@ from typing import List, Dict, Optional, Tuple
 from .quintuple_extractor import extract_quintuples
 from .quintuple_graph import store_quintuples, query_graph_by_keywords, get_all_quintuples
 from .quintuple_rag_query import query_knowledge, set_context
-from .task_manager import task_manager, start_auto_cleanup
+from .task_manager import task_manager, start_task_manager
 from system.config import config, AI_NAME
 
 logger = logging.getLogger(__name__)
@@ -35,9 +35,7 @@ class GRAGMemoryManager:
                 logger.warning("GRAG已启用但无法连接到Neo4j，将继续使用文件存储")
             logger.info("GRAG记忆系统初始化成功")
 
-            # 启动自动清理任务
-            start_auto_cleanup()
-
+            # 懒加载：任务管理器会在第一次调用add_task时自动启动
             # 设置任务完成回调
             self._weak_ref = weakref.ref(self)
             task_manager.on_task_completed = self._on_task_completed_wrapper

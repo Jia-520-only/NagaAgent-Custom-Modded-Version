@@ -11,7 +11,7 @@ import logging
 import asyncio
 import sys
 import os
-from typing import Callable, Optional, Dict, List
+from typing import Callable, Optional, Dict, Any, Union, List
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,6 +21,7 @@ try:
 except ImportError:
     # 如果直接导入失败，尝试从父目录导入
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from system.config import config, AI_NAME
 
 # 工具调用解析/执行已不再需要
 
@@ -149,6 +150,8 @@ class StreamingToolCallExtractor:
             except Exception as e:
                 logger.error(f"发送到语音集成失败: {e}")
     
+    # 工具调用相关方法已移除，功能已迁移到background_analyzer
+    
     async def finish_processing(self):
         """完成处理，清理剩余内容"""
         results = []
@@ -178,14 +181,14 @@ class StreamingToolCallExtractor:
         
         async for chunk in llm_service.stream_chat_with_context(messages, temperature):
             if chunk.startswith("data: "):
+                # 解码base64内容
                 try:
+                    import base64
                     data_str = chunk[6:].strip()
                     if data_str == '[DONE]':
                         break
-                    chunk_data = json.loads(data_str)
-                    text = chunk_data.get("text", "")
-                    if text:
-                        await self.process_text_chunk(text)
+                    decoded = base64.b64decode(data_str).decode('utf-8')
+                    await self.process_text_chunk(decoded)
                 except Exception as e:
                     logger.error(f"处理流式响应块失败: {e}")
                     continue
