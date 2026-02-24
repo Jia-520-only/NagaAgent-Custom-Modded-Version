@@ -1,0 +1,25 @@
+NagaAgent 安装�?v5.0.0
+
+快速安�?
+1. Windows: 双击运行 install.bat
+2. Linux/Mac: 运行 bash install.sh
+
+或手动安�?
+1. 创建虚拟环境: python -m venv venv
+2. 激活虚拟环�?
+   Windows: venv\Scripts\activate
+   Linux/Mac: source venv/bin/activate
+3. 安装依赖: pip install -r requirements.txt
+4. 配置: 运行 python install_wizard.py
+5. 启动: python main.py
+
+配置说明:
+- 复制 config.json.example �?config.json
+- 编辑 config.json 填写配置信息
+- 需要配�?API Key、Neo4j、GPT-SoVITS �?
+
+启动说明:
+- Windows: 运行 start.bat
+- Linux/Mac: 运行 ./start.sh
+
+更多信息请查�?README_MODDED.md

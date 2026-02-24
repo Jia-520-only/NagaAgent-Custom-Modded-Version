@@ -1,0 +1,85 @@
+{
+  "displayName": "QQ/微信集成",
+  "version": "1.2.0",
+  "description": "集成QQ和微信消息发送功能，支持私聊、群聊、合并转发、点赞、语音消息等功能，基于OneBot v11协议",
+  "author": "NagaAgent",
+  "agentType": "mcp",
+  "entryPoint": {
+    "module": "mcpserver.agent_qq_wechat.agent_qq_wechat",
+    "class": "AgentQQWeChat"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "发送QQ消息",
+        "description": "发送QQ私聊消息；参数：user_id（QQ号）、message（消息内容）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"发送QQ消息\",\"user_id\":\"123456789\",\"message\":\"你好\"}"
+      },
+      {
+        "command": "发送QQ群消息",
+        "description": "发送QQ群消息；参数：group_id（群号）、message（消息内容）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"发送QQ群消息\",\"group_id\":\"987654321\",\"message\":\"大家好\"}"
+      },
+      {
+        "command": "发送QQ语音",
+        "description": "发送QQ私聊语音消息（使用GPT-SoVITS生成语音）；参数：user_id（QQ号）、text（文本内容，可选）、audio_path（音频文件路径，可选）。如果提供text会自动生成语音",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"发送QQ语音\",\"user_id\":\"123456789\",\"text\":\"你好，这是语音消息\"}"
+      },
+      {
+        "command": "发送QQ群语音",
+        "description": "发送QQ群语音消息（使用GPT-SoVITS生成语音）；参数：group_id（群号）、text（文本内容，可选）、audio_path（音频文件路径，可选）。如果提供text会自动生成语音",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"发送QQ群语音\",\"group_id\":\"987654321\",\"text\":\"大家好，这是语音消息\"}"
+      },
+      {
+        "command": "发送合并转发消息",
+        "description": "发送合并转发消息到QQ群；参数：group_id（群号）、messages（消息节点列表）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"发送合并转发消息\",\"group_id\":\"987654321\",\"messages\":[{\"type\":\"node\",\"data\":{\"name\":\"张三\",\"uin\":\"123456789\",\"content\":\"第一条消息\"}}]}"
+      },
+      {
+        "command": "点赞用户",
+        "description": "给QQ用户点赞；参数：user_id（QQ号）、times（点赞次数，默认1）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"点赞用户\",\"user_id\":\"123456789\",\"times\":1}"
+      },
+      {
+        "command": "获取群消息历史",
+        "description": "获取QQ群消息历史；参数：group_id（群号）、count（消息数量，默认500）、message_seq（起始序号，可选）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"获取群消息历史\",\"group_id\":\"987654321\",\"count\":100}"
+      },
+      {
+        "command": "发送微信消息",
+        "description": "发送微信消息；参数：user_id（用户ID）或friend_name（好友昵称）、message（消息内容）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"发送微信消息\",\"friend_name\":\"张三\",\"message\":\"你好\"}"
+      },
+      {
+        "command": "发送微信群消息",
+        "description": "发送微信群消息；参数：chatroom_name（群名称）、message（消息内容）",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"发送微信群消息\",\"chatroom_name\":\"工作群\",\"message\":\"大家好\"}"
+      },
+      {
+        "command": "获取QQ状态",
+        "description": "获取QQ机器人连接状态",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"获取QQ状态\"}"
+      },
+      {
+        "command": "获取QQ群列表",
+        "description": "获取所有QQ群信息",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"获取QQ群列表\"}"
+      },
+      {
+        "command": "获取QQ好友列表",
+        "description": "获取所有QQ好友信息",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"获取QQ好友列表\"}"
+      },
+      {
+        "command": "获取微信好友列表",
+        "description": "获取所有微信好友信息",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"获取微信好友列表\"}"
+      },
+      {
+        "command": "获取微信群列表",
+        "description": "获取所有微信群信息",
+        "example": "{\"agentType\":\"mcp\",\"service_name\":\"agent_qq_wechat\",\"tool_name\":\"获取微信群列表\"}"
+      }
+    ]
+  }
+}

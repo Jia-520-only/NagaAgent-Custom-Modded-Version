@@ -1,0 +1,76 @@
+{
+  "displayName": "VCP记忆工具",
+  "name": "VCP记忆工具",
+  "description": "通过MCP协议调用VCPToolBox的高级记忆和RAG功能",
+  "version": "1.0.0",
+  "author": "NagaAgent",
+  "capabilities": {
+    "tools": [
+      {
+        "name": "vcp_rag_query",
+        "description": "使用VCP TagMemo浪潮算法检索相关记忆",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "查询内容"
+            },
+            "top_k": {
+              "type": "integer",
+              "description": "返回结果数量",
+              "default": 5
+            },
+            "use_tags": {
+              "type": "string",
+              "description": "指定标签(可选)"
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "vcp_store_memory",
+        "description": "存储记忆到VCP向量数据库",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string",
+              "description": "记忆内容"
+            },
+            "tags": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "标签列表"
+            },
+            "diary_name": {
+              "type": "string",
+              "description": "日记本名称(可选)"
+            }
+          },
+          "required": ["content"]
+        }
+      },
+      {
+        "name": "vcp_meta_thinking",
+        "description": "使用VCP元思考系统进行深度推理",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "theme": {
+              "type": "string",
+              "description": "思维主题(如creative_writing)"
+            },
+            "enable_group": {
+              "type": "boolean",
+              "description": "是否启用词元组网",
+              "default": true
+            }
+          },
+          "required": ["theme"]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,1206 @@
+"""AI 客户端入口。"""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import importlib.util
+import logging
+import re
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Optional, TYPE_CHECKING, Literal
+
+import httpx
+
+from Undefined.ai.llm import ModelRequester
+from Undefined.ai.multimodal import MultimodalAnalyzer
+from Undefined.ai.prompts import PromptBuilder
+from Undefined.ai.summaries import SummaryService
+from Undefined.ai.tokens import TokenCounter
+from Undefined.ai.tooling import ToolManager
+from Undefined.config import (
+    ChatModelConfig,
+    VisionModelConfig,
+    AgentModelConfig,
+    InflightSummaryModelConfig,
+    Config,
+)
+from Undefined.context import RequestContext
+from Undefined.context_resource_registry import set_context_resource_scan_paths
+from Undefined.end_summary_storage import EndSummaryStorage
+from Undefined.inflight_task_store import InflightTaskLocation, InflightTaskStore
+from Undefined.memory import MemoryStorage
+from Undefined.skills.agents import AgentRegistry
+from Undefined.skills.agents.intro_generator import (
+    AgentIntroGenConfig,
+    AgentIntroGenerator,
+)
+from Undefined.skills.anthropic_skills import AnthropicSkillRegistry
+from Undefined.skills.tools import ToolRegistry
+from Undefined.token_usage_storage import TokenUsageStorage
+from Undefined.utils.logging import log_debug_json, redact_string
+from Undefined.utils.tool_calls import parse_tool_arguments
+
+logger = logging.getLogger(__name__)
+
+
+_CONTENT_TAG_PATTERN = re.compile(
+    r"<content>(.*?)</content>", re.DOTALL | re.IGNORECASE
+)
+
+
+# 尝试导入 langchain SearxSearchWrapper
+if TYPE_CHECKING:
+    from langchain_community.utilities import (
+        SearxSearchWrapper as SearxSearchWrapperType,
+    )
+else:
+    SearxSearchWrapperType = object
+
+_SearxSearchWrapper: type[SearxSearchWrapperType] | None
+try:
+    from langchain_community.utilities import SearxSearchWrapper as _SearxSearchWrapper
+
+    _SEARX_AVAILABLE = True
+except Exception:
+    _SearxSearchWrapper = None
+    _SEARX_AVAILABLE = False
+    logger.warning(
+        "[初始化] langchain_community 未安装或 SearxSearchWrapper 不可用，搜索功能将禁用"
+    )
+
+# 尝试导入 crawl4ai
+try:
+    importlib.util.find_spec("crawl4ai")
+    _CRAWL4AI_AVAILABLE = True
+    try:
+        _PROXY_CONFIG_AVAILABLE = True
+    except (ImportError, AttributeError):
+        _PROXY_CONFIG_AVAILABLE = False
+except Exception:
+    _CRAWL4AI_AVAILABLE = False
+    _PROXY_CONFIG_AVAILABLE = False
+    logger.warning("[初始化] crawl4ai 未安装，网页获取功能将禁用")
+
+
+class AIClient:
+    """AI 模型客户端"""
+
+    def __init__(
+        self,
+        chat_config: ChatModelConfig,
+        vision_config: VisionModelConfig,
+        agent_config: AgentModelConfig,
+        memory_storage: Optional[MemoryStorage] = None,
+        end_summary_storage: Optional[EndSummaryStorage] = None,
+        bot_qq: int = 0,
+        runtime_config: Config | None = None,
+    ) -> None:
+        """初始化 AI 客户端
+
+        参数:
+            chat_config: 对话模型配置
+            vision_config: 视觉模型配置
+            agent_config: 智能体模型配置
+            memory_storage: 长期记忆存储
+            end_summary_storage: 短期回忆存储
+            bot_qq: 机器人自身的 QQ 号
+        """
+        self.chat_config = chat_config
+        self.vision_config = vision_config
+        self.agent_config = agent_config
+        self.bot_qq = bot_qq
+        self.runtime_config = runtime_config
+        self.memory_storage = memory_storage
+        self._end_summary_storage = end_summary_storage or EndSummaryStorage()
+
+        self._http_client = httpx.AsyncClient(timeout=480.0)
+        self._token_usage_storage = TokenUsageStorage()
+        self._requester = ModelRequester(self._http_client, self._token_usage_storage)
+        self._token_counter = TokenCounter()
+
+        # 私聊发送回调
+        self._send_private_message_callback: Optional[
+            Callable[[int, str], Awaitable[None]]
+        ] = None
+        # 发送图片回调
+        self._send_image_callback: Optional[
+            Callable[[int, str, str], Awaitable[None]]
+        ] = None
+
+        # 当前群聊ID和用户ID（用于send_message工具）
+        self.current_group_id: Optional[int] = None
+        self.current_user_id: Optional[int] = None
+
+        # 初始化工具注册表
+        base_dir = Path(__file__).resolve().parents[1]
+        self.tool_registry = ToolRegistry(base_dir / "skills" / "tools")
+        self.agent_registry = AgentRegistry(base_dir / "skills" / "agents")
+
+        # 初始化 Anthropic Agent Skills 注册表（可选，目录不存在时自动跳过）
+        anthropic_skills_dir = base_dir / "skills" / "anthropic_skills"
+        dot_delimiter = self._get_runtime_config().tools_dot_delimiter
+        self.anthropic_skill_registry = AnthropicSkillRegistry(
+            anthropic_skills_dir, dot_delimiter=dot_delimiter
+        )
+
+        self.tool_manager = ToolManager(
+            self.tool_registry,
+            self.agent_registry,
+            anthropic_skill_registry=self.anthropic_skill_registry,
+        )
+
+        # 绑定上下文资源扫描路径（基于注册表 watch_paths）
+        scan_paths = [
+            p
+            for p in (
+                self.tool_registry._watch_paths + self.agent_registry._watch_paths
+            )
+            if p.exists()
+        ]
+        set_context_resource_scan_paths(scan_paths)
+        logger.debug(
+            "[初始化] 上下文资源扫描路径已绑定: count=%s",
+            len(scan_paths),
+        )
+
+        # Agent intro 生成器（延迟初始化，需要外部设置 queue_manager）
+        self._agent_intro_generator: Any | None = None
+        self._agent_intro_task: asyncio.Task[None] | None = None
+        self._queue_manager: Any | None = None
+        self._intro_config: Any | None = None
+
+        # 后台任务引用集合（防止被 GC）
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+
+        # 保存配置供后续使用
+        runtime_config = self._get_runtime_config()
+        self._intro_config = AgentIntroGenConfig(
+            enabled=runtime_config.agent_intro_autogen_enabled,
+            queue_interval_seconds=runtime_config.agent_intro_autogen_queue_interval,
+            max_tokens=runtime_config.agent_intro_autogen_max_tokens,
+            cache_path=Path(runtime_config.agent_intro_hash_path),
+        )
+
+        # 启动 skills 热重载
+        hot_reload_enabled = runtime_config.skills_hot_reload
+        if hot_reload_enabled:
+            interval = runtime_config.skills_hot_reload_interval
+            debounce = runtime_config.skills_hot_reload_debounce
+            self.tool_registry.start_hot_reload(interval=interval, debounce=debounce)
+            self.agent_registry.start_hot_reload(interval=interval, debounce=debounce)
+            self.anthropic_skill_registry.start_hot_reload(
+                interval=interval, debounce=debounce
+            )
+            logger.info(
+                "[初始化] 技能热重载已启用: interval=%.2fs debounce=%.2fs",
+                interval,
+                debounce,
+            )
+        else:
+            logger.info("[初始化] 技能热重载已禁用")
+
+        # 初始化搜索 wrapper
+        self._search_wrapper: Optional[Any] = None
+        if _SEARX_AVAILABLE and _SearxSearchWrapper is not None:
+            searxng_url = runtime_config.searxng_url
+            if searxng_url:
+                try:
+                    self._search_wrapper = _SearxSearchWrapper(
+                        searx_host=searxng_url, k=10
+                    )
+                    logger.info(
+                        "[初始化] SearxSearchWrapper 初始化成功: url=%s k=10",
+                        redact_string(searxng_url),
+                    )
+                except Exception as exc:
+                    logger.warning("[初始化] SearxSearchWrapper 初始化失败: %s", exc)
+            else:
+                logger.info("[初始化] SEARXNG_URL 未配置，搜索功能禁用")
+
+        if _CRAWL4AI_AVAILABLE:
+            logger.info("[初始化] crawl4ai 可用，网页获取功能已启用")
+        else:
+            logger.warning("[初始化] crawl4ai 不可用，网页获取功能将禁用")
+
+        self._inflight_task_store = InflightTaskStore()
+
+        self._prompt_builder = PromptBuilder(
+            bot_qq=self.bot_qq,
+            memory_storage=self.memory_storage,
+            end_summary_storage=self._end_summary_storage,
+            inflight_task_store=self._inflight_task_store,
+            runtime_config_getter=self._get_runtime_config,
+            anthropic_skill_registry=self.anthropic_skill_registry,
+        )
+        self._multimodal = MultimodalAnalyzer(self._requester, self.vision_config)
+        self._summary_service = SummaryService(
+            self._requester, self.chat_config, self._token_counter
+        )
+
+        async def init_mcp_async() -> None:
+            try:
+                await self.tool_registry.initialize_mcp_toolsets()
+            except Exception as exc:
+                logger.warning("[初始化] 异步初始化 MCP 工具集失败: %s", exc)
+
+        self._mcp_init_task = asyncio.create_task(init_mcp_async())
+
+        logger.info("[初始化] AIClient 初始化完成")
+
+    async def close(self) -> None:
+        logger.info("[清理] 正在关闭 AIClient...")
+
+        # 1) 停止后台任务（避免关闭 HTTP client 后仍有请求在跑）
+        intro_gen = getattr(self, "_agent_intro_generator", None)
+        if intro_gen is not None:
+            await intro_gen.stop()
+        if hasattr(self, "_agent_intro_task") and self._agent_intro_task:
+            if not self._agent_intro_task.done():
+                await self._agent_intro_task
+
+        # 2) 等待 MCP 初始化完成，再关闭 MCP toolsets
+        if hasattr(self, "_mcp_init_task") and not self._mcp_init_task.done():
+            await self._mcp_init_task
+
+        if hasattr(self, "tool_registry"):
+            await self.tool_registry.stop_hot_reload()
+            await self.tool_registry.close_mcp_toolsets()
+        if hasattr(self, "agent_registry"):
+            await self.agent_registry.stop_hot_reload()
+        if hasattr(self, "anthropic_skill_registry"):
+            await self.anthropic_skill_registry.stop_hot_reload()
+
+        # 3) 最后关闭共享 HTTP client
+        if hasattr(self, "_http_client"):
+            logger.info("[清理] 正在关闭 AIClient HTTP 客户端...")
+            await self._http_client.aclose()
+
+        logger.info("[清理] AIClient 已关闭")
+
+    def set_queue_manager(self, queue_manager: Any) -> None:
+        """设置队列管理器并启动 Agent intro 生成器。
+
+        参数:
+            queue_manager: 队列管理器实例
+        """
+        if self._queue_manager is not None:
+            logger.warning("[AI客户端] queue_manager 已设置，跳过重复设置")
+            return
+
+        if queue_manager is None:
+            logger.warning("[AI客户端] 传入的 queue_manager 为 None")
+            return
+
+        self._queue_manager = queue_manager
+
+        # 启动/刷新 Agent intro 自动生成
+        if self._intro_config:
+            self.apply_intro_config(self._intro_config)
+
+    def apply_intro_config(self, config: AgentIntroGenConfig) -> None:
+        """应用 Agent intro 生成器配置（支持热更新）。"""
+        self._intro_config = config
+        if self._queue_manager is None:
+            return
+        asyncio.create_task(self._refresh_intro_generator(config))
+
+    async def _refresh_intro_generator(self, config: AgentIntroGenConfig) -> None:
+        if not config.enabled:
+            if self._agent_intro_generator is not None:
+                await self._agent_intro_generator.stop()
+                self._agent_intro_generator = None
+            self._agent_intro_task = None
+            logger.info("[Agent介绍] 自动生成已关闭")
+            return
+
+        if self._queue_manager is None:
+            return
+
+        if self._agent_intro_generator is None:
+            self._agent_intro_generator = AgentIntroGenerator(
+                self.agent_registry.base_dir,
+                self,
+                self._queue_manager,
+                config,
+            )
+            self._agent_intro_task = asyncio.create_task(
+                self._agent_intro_generator.start()
+            )
+            logger.info(
+                "[Agent介绍] 自动生成已启动: interval=%.2fs max_tokens=%s cache=%s",
+                config.queue_interval_seconds,
+                config.max_tokens,
+                config.cache_path,
+            )
+            return
+
+        if self._agent_intro_generator.config.cache_path != config.cache_path:
+            await self._agent_intro_generator.stop()
+            self._agent_intro_generator = AgentIntroGenerator(
+                self.agent_registry.base_dir,
+                self,
+                self._queue_manager,
+                config,
+            )
+            self._agent_intro_task = asyncio.create_task(
+                self._agent_intro_generator.start()
+            )
+            logger.info(
+                "[Agent介绍] 缓存路径变更，已重启生成器: cache=%s",
+                config.cache_path,
+            )
+            return
+
+        self._agent_intro_generator.config = config
+
+    def apply_search_config(self, searxng_url: str) -> None:
+        """应用搜索服务配置（支持热更新）。"""
+        if not _SEARX_AVAILABLE or _SearxSearchWrapper is None:
+            if searxng_url:
+                logger.warning(
+                    "[配置] 搜索组件不可用，已忽略 SEARXNG_URL=%s",
+                    redact_string(searxng_url),
+                )
+            else:
+                logger.info("[配置] 搜索组件不可用，搜索已禁用")
+            self._search_wrapper = None
+            return
+
+        if not searxng_url:
+            self._search_wrapper = None
+            logger.info("[配置] SEARXNG_URL 未配置，搜索功能已禁用")
+            return
+
+        try:
+            self._search_wrapper = _SearxSearchWrapper(searx_host=searxng_url, k=10)
+            logger.info(
+                "[配置] 搜索服务已更新: url=%s k=10",
+                redact_string(searxng_url),
+            )
+        except Exception as exc:
+            logger.warning("[配置] 搜索服务更新失败: %s", exc)
+            self._search_wrapper = None
+            logger.info("[配置] 搜索服务已回退为禁用")
+
+    def count_tokens(self, text: str) -> int:
+        return self._token_counter.count(text)
+
+    def _get_runtime_config(self) -> Config:
+        if self.runtime_config is not None:
+            return self.runtime_config
+        from Undefined.config import get_config
+
+        return get_config(strict=False)
+
+    def _get_prefetch_tool_names(self) -> list[str]:
+        runtime_config = self._get_runtime_config()
+        return list(runtime_config.prefetch_tools)
+
+    def _filter_tools_for_runtime_config(
+        self, tools: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        runtime_config = self._get_runtime_config()
+        enabled = bool(getattr(runtime_config, "nagaagent_mode_enabled", False))
+        if enabled:
+            return tools
+
+        # 关闭 NagaAgent 模式时：隐藏相关 Agent，避免被模型误调用。
+        filtered: list[dict[str, Any]] = []
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if name == "naga_code_analysis_agent":
+                continue
+            filtered.append(tool)
+        return filtered
+
+    def _prefetch_hide_tools(self) -> bool:
+        runtime_config = self._get_runtime_config()
+        return runtime_config.prefetch_tools_hide
+
+    def _is_missing_tool_result(self, result: Any) -> bool:
+        if not isinstance(result, str):
+            return False
+        return result.startswith("未找到项目") or result.startswith("未找到 MCP 工具")
+
+    async def _maybe_prefetch_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        call_type: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+        if not tools:
+            return messages, tools
+
+        # 预先调用部分工具，为模型补充稳定上下文（同一 call_type 仅执行一次）
+        prefetch_names = self._get_prefetch_tool_names()
+        if not prefetch_names:
+            return messages, tools
+
+        available_names = {
+            tool.get("function", {}).get("name")
+            for tool in tools
+            if tool.get("function")
+        }
+        prefetch_targets = [name for name in prefetch_names if name in available_names]
+        if not prefetch_targets:
+            return messages, tools
+
+        # 使用 RequestContext 缓存已执行的预先调用，避免重复触发
+        ctx = RequestContext.current()
+        cache: dict[str, list[str]] = {}
+        done: set[str] = set()
+        if ctx:
+            cache = ctx.get_resource("prefetch_tools", {}) or {}
+            done = set(cache.get(call_type, []))
+
+        to_run = [name for name in prefetch_targets if name not in done]
+        if not to_run:
+            return messages, tools
+
+        results: list[tuple[str, Any]] = []
+        for name in to_run:
+            try:
+                # 为特定工具准备参数
+                tool_args: dict[str, Any] = {}
+                if name == "get_current_time":
+                    tool_args = {"format": "text", "include_lunar": True}
+
+                result = await self.tool_manager.execute_tool(
+                    name,
+                    tool_args,
+                    {
+                        "runtime_config": self._get_runtime_config(),
+                        "easter_egg_silent": True,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("[预先调用] %s 执行失败: %s", name, exc)
+                continue
+
+            if self._is_missing_tool_result(result):
+                logger.warning("[预先调用] %s 未找到对应工具，跳过", name)
+                continue
+
+            results.append((name, result))
+            done.add(name)
+
+        if not results:
+            return messages, tools
+
+        if ctx:
+            cache[call_type] = sorted(done)
+            ctx.set_resource("prefetch_tools", cache)
+
+        content_lines = ["【预先工具结果】"]
+        content_lines.extend([f"- {name}: {result}" for name, result in results])
+        prefetch_message = {"role": "system", "content": "\n".join(content_lines)}
+
+        insert_idx = 0
+        for idx, msg in enumerate(messages):
+            if msg.get("role") == "system":
+                insert_idx = idx + 1
+            else:
+                break
+        new_messages = list(messages)
+        new_messages.insert(insert_idx, prefetch_message)
+
+        if self._prefetch_hide_tools():
+            hidden = set(name for name in done)
+            tools = [
+                tool
+                for tool in tools
+                if tool.get("function", {}).get("name") not in hidden
+            ]
+        return new_messages, tools
+
+    async def request_model(
+        self,
+        model_config: ChatModelConfig
+        | VisionModelConfig
+        | AgentModelConfig
+        | InflightSummaryModelConfig,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 8192,
+        call_type: str = "chat",
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        tools = self.tool_manager.maybe_merge_agent_tools(call_type, tools)
+        messages, tools = await self._maybe_prefetch_tools(messages, tools, call_type)
+        return await self._requester.request(
+            model_config=model_config,
+            messages=messages,
+            max_tokens=max_tokens,
+            call_type=call_type,
+            tools=tools,
+            tool_choice=tool_choice,
+            **kwargs,
+        )
+
+    def get_active_agent_mcp_registry(self, agent_name: str) -> Any | None:
+        return self.tool_manager.get_active_agent_mcp_registry(agent_name)
+
+    async def analyze_multimodal(
+        self,
+        media_url: str,
+        media_type: str = "auto",
+        prompt_extra: str = "",
+    ) -> dict[str, str]:
+        return await self._multimodal.analyze(media_url, media_type, prompt_extra)
+
+    async def describe_image(
+        self, image_url: str, prompt_extra: str = ""
+    ) -> dict[str, str]:
+        return await self._multimodal.describe_image(image_url, prompt_extra)
+
+    def get_media_history(self, media_key: str) -> list[dict[str, str]]:
+        """获取指定媒体键的多模态分析历史 Q&A 记录。"""
+        return self._multimodal.get_history(media_key)
+
+    async def save_media_history(
+        self, media_key: str, question: str, answer: str
+    ) -> None:
+        """保存一条多模态分析 Q&A 到历史记录并持久化到磁盘。"""
+        await self._multimodal.save_history(media_key, question, answer)
+
+    async def summarize_chat(self, messages: str, context: str = "") -> str:
+        return await self._summary_service.summarize_chat(messages, context)
+
+    async def merge_summaries(self, summaries: list[str]) -> str:
+        return await self._summary_service.merge_summaries(summaries)
+
+    def split_messages_by_tokens(self, messages: str, max_tokens: int) -> list[str]:
+        return self._summary_service.split_messages_by_tokens(messages, max_tokens)
+
+    async def generate_title(self, summary: str) -> str:
+        return await self._summary_service.generate_title(summary)
+
+    def get_inflight_task_store(self) -> InflightTaskStore:
+        return self._inflight_task_store
+
+    def get_inflight_summary_model_config(self) -> InflightSummaryModelConfig:
+        runtime_config = self._get_runtime_config()
+        return runtime_config.inflight_summary_model
+
+    async def set_inflight_summary_generation_result(
+        self, request_id: str, action_summary: str
+    ) -> bool:
+        return await self._inflight_task_store.mark_ready(request_id, action_summary)
+
+    async def clear_inflight_summary_for_request(self, request_id: str) -> bool:
+        return await self._inflight_task_store.clear_by_request(request_id)
+
+    async def clear_inflight_summary_for_chat(
+        self,
+        request_type: Literal["group", "private"],
+        chat_id: int,
+        owner_request_id: str | None = None,
+    ) -> bool:
+        return await self._inflight_task_store.clear_for_chat(
+            request_type=request_type,
+            chat_id=chat_id,
+            owner_request_id=owner_request_id,
+        )
+
+    async def _enqueue_inflight_summary_generation(
+        self,
+        *,
+        request_id: str,
+        source_message: str,
+        location: InflightTaskLocation,
+    ) -> None:
+        if not self._is_inflight_summary_enabled():
+            logger.debug(
+                "[进行中摘要] 功能已关闭，跳过摘要投递: request_id=%s",
+                request_id,
+            )
+            return
+
+        if self._queue_manager is None:
+            logger.debug(
+                "[进行中摘要] queue_manager 未设置，跳过异步摘要: request_id=%s",
+                request_id,
+            )
+            return
+
+        request_data: dict[str, Any] = {
+            "type": "inflight_summary_generation",
+            "request_id": request_id,
+            "source_message": source_message,
+            "location": {
+                "type": location.get("type"),
+                "name": location.get("name"),
+                "id": int(location.get("id", 0)),
+            },
+        }
+        model_config = self.get_inflight_summary_model_config()
+        try:
+            await self._queue_manager.add_background_request(
+                request_data,
+                model_name=model_config.model_name,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[进行中摘要] 投递后台请求失败: request_id=%s error=%s",
+                request_id,
+                exc,
+            )
+
+    def _extract_message_excerpt(self, question: str) -> str:
+        matched = _CONTENT_TAG_PATTERN.search(question)
+        if matched:
+            content = html.unescape(matched.group(1))
+        else:
+            content = question
+        cleaned = " ".join(content.split()).strip()
+        if not cleaned:
+            return "(无文本内容)"
+        if len(cleaned) > 120:
+            return cleaned[:117].rstrip() + "..."
+        return cleaned
+
+    def _build_inflight_location(
+        self, tool_context: dict[str, Any]
+    ) -> InflightTaskLocation | None:
+        request_type = str(tool_context.get("request_type") or "").strip().lower()
+        if request_type == "group":
+            group_id_raw = tool_context.get("group_id")
+            if group_id_raw is None:
+                return None
+            try:
+                group_id = int(group_id_raw)
+            except (TypeError, ValueError):
+                return None
+            group_name_raw = tool_context.get("group_name")
+            group_name = (
+                str(group_name_raw).strip() if group_name_raw is not None else ""
+            )
+            if not group_name:
+                group_name = f"群{group_id}"
+            return {"type": "group", "name": group_name, "id": group_id}
+
+        if request_type == "private":
+            user_id_raw = tool_context.get("user_id")
+            if user_id_raw is None:
+                user_id_raw = tool_context.get("sender_id")
+            if user_id_raw is None:
+                return None
+            try:
+                user_id = int(user_id_raw)
+            except (TypeError, ValueError):
+                return None
+            sender_name_raw = tool_context.get("sender_name")
+            sender_name = (
+                str(sender_name_raw).strip() if sender_name_raw is not None else ""
+            )
+            if not sender_name:
+                sender_name = str(user_id)
+            return {"type": "private", "name": sender_name, "id": user_id}
+
+        return None
+
+    def _is_end_only_tool_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        api_to_internal: dict[str, str],
+    ) -> bool:
+        if not tool_calls:
+            return False
+        for tool_call in tool_calls:
+            function = tool_call.get("function", {})
+            api_name = str(function.get("name", "") or "")
+            internal_name = api_to_internal.get(api_name, api_name)
+            if internal_name != "end":
+                return False
+        return True
+
+    def _is_inflight_summary_enabled(self) -> bool:
+        try:
+            runtime_config = self._get_runtime_config()
+            return bool(getattr(runtime_config, "inflight_summary_enabled", False))
+        except Exception:
+            return False
+
+    def _should_pre_register_inflight(
+        self, context: dict[str, Any], question: str
+    ) -> bool:
+        """根据配置决定是否预注册进行中占位。"""
+        try:
+            runtime_config = self._get_runtime_config()
+            return bool(getattr(runtime_config, "inflight_pre_register_enabled", True))
+        except Exception:
+            return True
+
+    async def ask(
+        self,
+        question: str,
+        context: str = "",
+        send_message_callback: Callable[[str], Awaitable[None]] | None = None,
+        get_recent_messages_callback: Callable[
+            [str, str, int, int], Awaitable[list[dict[str, Any]]]
+        ]
+        | None = None,
+        get_image_url_callback: Callable[[str], Awaitable[str | None]] | None = None,
+        get_forward_msg_callback: Callable[[str], Awaitable[list[dict[str, Any]]]]
+        | None = None,
+        send_like_callback: Callable[[int, int], Awaitable[None]] | None = None,
+        sender: Any = None,
+        history_manager: Any = None,
+        onebot_client: Any = None,
+        scheduler: Any = None,
+        extra_context: dict[str, Any] | None = None,
+    ) -> str:
+        """发送问题给 AI 并获取回复 (支持工具调用和迭代)
+
+        参数:
+            question: 用户输入的问题
+            context: 额外的上下文背景
+            send_message_callback: 发送消息的回调
+            get_recent_messages_callback: 获取上下文历史消息的回调
+            get_image_url_callback: 获取图片 URL 的回调
+            get_forward_msg_callback: 获取合并转发内容的回调
+            send_like_callback: 点赞回调
+            sender: 消息发送助手实例
+            history_manager: 历史记录管理器实例
+            onebot_client: OneBot 客户端实例
+            scheduler: 任务调度器实例
+            extra_context: 额外的上下文负载
+
+        返回:
+            AI 生成的最终文本回复
+        """
+        ctx = RequestContext.current()
+        pre_context: dict[str, Any] = {}
+        if ctx:
+            if ctx.group_id is not None:
+                pre_context["group_id"] = ctx.group_id
+            if ctx.user_id is not None:
+                pre_context["user_id"] = ctx.user_id
+            if ctx.sender_id is not None:
+                pre_context["sender_id"] = ctx.sender_id
+            pre_context["request_type"] = ctx.request_type
+            pre_context["request_id"] = ctx.request_id
+        if extra_context:
+            pre_context.update(extra_context)
+
+        inflight_request_id = str(pre_context.get("request_id") or "").strip()
+        inflight_location = self._build_inflight_location(pre_context)
+        source_message_excerpt = self._extract_message_excerpt(question)
+        inflight_registered = False
+        inflight_summary_enqueued = False
+        inflight_summary_enabled = self._is_inflight_summary_enabled()
+
+        if not inflight_summary_enabled:
+            logger.debug("[进行中摘要] 功能已关闭：跳过占位与摘要注入")
+
+        should_pre_register = self._should_pre_register_inflight(pre_context, question)
+        if should_pre_register and inflight_request_id and inflight_location:
+            await self._inflight_task_store.upsert_pending(
+                request_id=inflight_request_id,
+                request_type=inflight_location["type"],
+                chat_id=inflight_location["id"],
+                location_name=inflight_location["name"],
+                source_message=source_message_excerpt,
+            )
+            inflight_registered = True
+            logger.info(
+                "[进行中摘要] 首轮前预占位: request_id=%s location=%s:%s",
+                inflight_request_id,
+                inflight_location["type"],
+                inflight_location["id"],
+            )
+
+        messages = await self._prompt_builder.build_messages(
+            question,
+            get_recent_messages_callback=get_recent_messages_callback,
+            extra_context=extra_context,
+        )
+
+        tools = self.tool_manager.get_openai_tools()
+        tools = self._filter_tools_for_runtime_config(tools)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[AI消息] 构建完成: messages=%s tools=%s question_len=%s",
+                len(messages),
+                len(tools),
+                len(question),
+            )
+            log_debug_json(logger, "[AI消息内容]", messages)
+
+        tool_context = ctx.get_resources() if ctx else {}
+        tool_context["conversation_ended"] = False
+        tool_context.setdefault("agent_histories", {})
+
+        # 显式注入 RequestContext 的核心字段（与 tooling.py:execute_tool_call 保持一致）
+        if ctx:
+            if ctx.group_id is not None:
+                tool_context.setdefault("group_id", ctx.group_id)
+            if ctx.user_id is not None:
+                tool_context.setdefault("user_id", ctx.user_id)
+            if ctx.sender_id is not None:
+                tool_context.setdefault("sender_id", ctx.sender_id)
+            tool_context.setdefault("request_type", ctx.request_type)
+            tool_context.setdefault("request_id", ctx.request_id)
+
+        if extra_context:
+            tool_context.update(extra_context)
+
+        # 注入常用资源（用于工具执行）
+        tool_context.setdefault("ai_client", self)
+        tool_context.setdefault("runtime_config", self._get_runtime_config())
+        tool_context.setdefault("search_wrapper", self._search_wrapper)
+        tool_context.setdefault("end_summary_storage", self._end_summary_storage)
+        tool_context.setdefault("end_summaries", self._prompt_builder.end_summaries)
+        tool_context.setdefault("inflight_task_store", self._inflight_task_store)
+        tool_context.setdefault(
+            "send_private_message_callback", self._send_private_message_callback
+        )
+        tool_context.setdefault("send_message_callback", send_message_callback)
+        tool_context.setdefault("sender", sender)
+        tool_context.setdefault("send_image_callback", self._send_image_callback)
+
+        if not inflight_request_id:
+            inflight_request_id = str(tool_context.get("request_id") or "").strip()
+        if inflight_location is None:
+            inflight_location = self._build_inflight_location(tool_context)
+
+        max_iterations = 1000
+        iteration = 0
+        conversation_ended = False
+        any_tool_executed = False
+        cot_compat = getattr(self.chat_config, "thinking_tool_call_compat", False)
+        cot_compat_logged = False
+        cot_missing_logged = False
+
+        async def _clear_inflight_on_exit() -> None:
+            nonlocal inflight_registered
+            if not inflight_registered or not inflight_request_id:
+                return
+            await self.clear_inflight_summary_for_request(inflight_request_id)
+            inflight_registered = False
+
+        while iteration < max_iterations:
+            iteration += 1
+            logger.info(f"[AI决策] 开始第 {iteration} 轮迭代...")
+
+            try:
+                result = await self.request_model(
+                    model_config=self.chat_config,
+                    messages=messages,
+                    max_tokens=8192,
+                    call_type="chat",
+                    tools=tools,
+                    tool_choice="auto",
+                )
+
+                tool_name_map = (
+                    result.get("_tool_name_map") if isinstance(result, dict) else None
+                )
+                api_to_internal: dict[str, str] = {}
+                if isinstance(tool_name_map, dict):
+                    raw_api_to_internal = tool_name_map.get("api_to_internal")
+                    if isinstance(raw_api_to_internal, dict):
+                        api_to_internal = {
+                            str(k): str(v) for k, v in raw_api_to_internal.items()
+                        }
+
+                choice = result.get("choices", [{}])[0]
+                message = choice.get("message", {})
+                content: str = message.get("content") or ""
+                reasoning_content = message.get("reasoning_content")
+                tool_calls = message.get("tool_calls", [])
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[AI响应] content_len=%s tool_calls=%s",
+                        len(content),
+                        len(tool_calls),
+                    )
+                    if tool_calls:
+                        log_debug_json(logger, "[AI工具调用]", tool_calls)
+
+                log_thinking = self._get_runtime_config().log_thinking
+                if cot_compat and tools and log_thinking and not cot_compat_logged:
+                    cot_compat_logged = True
+                    logger.info(
+                        "[思维链兼容] 多轮工具调用 reasoning_content 回传已启用"
+                    )
+                if (
+                    cot_compat
+                    and log_thinking
+                    and tools
+                    and getattr(self.chat_config, "thinking_enabled", False)
+                    and not reasoning_content
+                    and tool_calls
+                    and not cot_missing_logged
+                ):
+                    cot_missing_logged = True
+                    message_keys = (
+                        ", ".join(sorted(message.keys()))
+                        if isinstance(message, dict)
+                        else type(message).__name__
+                    )
+                    logger.info(
+                        "[思维链兼容] 未在响应中发现 reasoning_content（可能是模型/服务商不返回思维链）；message_keys=%s",
+                        message_keys,
+                    )
+
+                if content.strip() and tool_calls:
+                    logger.debug(
+                        "检测到 content 与工具调用同时存在，忽略 content，仅执行工具调用"
+                    )
+                    content = ""
+
+                if inflight_summary_enabled and iteration == 1 and tool_calls:
+                    is_end_only = self._is_end_only_tool_calls(
+                        tool_calls, api_to_internal
+                    )
+                    if is_end_only:
+                        if inflight_registered and inflight_request_id:
+                            await self.clear_inflight_summary_for_request(
+                                inflight_request_id
+                            )
+                            inflight_registered = False
+                            logger.info(
+                                "[进行中摘要] 首轮仅end，已清理占位: request_id=%s",
+                                inflight_request_id,
+                            )
+                    elif inflight_request_id and inflight_location:
+                        if not inflight_registered:
+                            await self._inflight_task_store.upsert_pending(
+                                request_id=inflight_request_id,
+                                request_type=inflight_location["type"],
+                                chat_id=inflight_location["id"],
+                                location_name=inflight_location["name"],
+                                source_message=source_message_excerpt,
+                            )
+                            inflight_registered = True
+                            logger.info(
+                                "[进行中摘要] 已创建占位: request_id=%s location=%s:%s",
+                                inflight_request_id,
+                                inflight_location["type"],
+                                inflight_location["id"],
+                            )
+
+                        if not inflight_summary_enqueued:
+
+                            def _cleanup_task(t: asyncio.Task[Any]) -> None:
+                                self._background_tasks.discard(t)
+                                if t.exception() is not None:
+                                    logger.error(
+                                        "[进行中摘要] 投递失败: %s", t.exception()
+                                    )
+
+                            task = asyncio.create_task(
+                                self._enqueue_inflight_summary_generation(
+                                    request_id=inflight_request_id,
+                                    source_message=source_message_excerpt,
+                                    location=inflight_location,
+                                )
+                            )
+                            self._background_tasks.add(task)
+                            task.add_done_callback(_cleanup_task)
+                            inflight_summary_enqueued = True
+                            logger.info(
+                                "[进行中摘要] 已投递摘要生成: request_id=%s",
+                                inflight_request_id,
+                            )
+                    else:
+                        logger.debug(
+                            "[进行中摘要] 跳过占位创建: request_id=%s end_only=%s has_location=%s",
+                            inflight_request_id,
+                            is_end_only,
+                            bool(inflight_location),
+                        )
+
+                if not tool_calls:
+                    logger.info(
+                        "[AI回复] 会话结束，返回最终内容: length=%s",
+                        len(content),
+                    )
+                    await _clear_inflight_on_exit()
+                    return content
+
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
+                if cot_compat and reasoning_content is not None:
+                    assistant_message["reasoning_content"] = reasoning_content
+                messages.append(assistant_message)
+
+                tool_tasks = []
+                tool_call_ids = []
+                tool_api_names: list[str] = []
+                tool_internal_names: list[str] = []
+                end_tool_call: dict[str, Any] | None = None
+                end_tool_args: dict[str, Any] = {}
+
+                for tool_call in tool_calls:
+                    call_id = tool_call.get("id", "")
+                    function = tool_call.get("function", {})
+                    api_function_name = function.get("name", "")
+                    raw_args = function.get("arguments")
+
+                    internal_function_name = api_to_internal.get(
+                        str(api_function_name), str(api_function_name)
+                    )
+
+                    if internal_function_name != api_function_name:
+                        logger.info(
+                            "[工具准备] 准备调用: %s (原名: %s) (ID=%s)",
+                            internal_function_name,
+                            api_function_name,
+                            call_id,
+                        )
+                    else:
+                        logger.info(
+                            "[工具准备] 准备调用: %s (ID=%s)",
+                            api_function_name,
+                            call_id,
+                        )
+                    logger.debug(
+                        f"[工具参数] {api_function_name} 参数: {redact_string(str(raw_args))}"
+                    )
+
+                    function_args = parse_tool_arguments(
+                        raw_args,
+                        logger=logger,
+                        tool_name=str(api_function_name),
+                    )
+
+                    if not isinstance(function_args, dict):
+                        function_args = {}
+
+                    # 检测 end 工具，暂存后统一处理
+                    if internal_function_name == "end":
+                        if len(tool_calls) > 1:
+                            logger.warning(
+                                "[工具调用] end 与其他工具同时调用，"
+                                "将先执行其他工具，并回填 end 跳过结果"
+                            )
+                        end_tool_call = tool_call
+                        end_tool_args = function_args
+                        continue
+
+                    tool_call_ids.append(call_id)
+                    tool_api_names.append(str(api_function_name))
+                    tool_internal_names.append(str(internal_function_name))
+                    tool_tasks.append(
+                        self.tool_manager.execute_tool(
+                            str(internal_function_name), function_args, tool_context
+                        )
+                    )
+
+                if tool_tasks:
+                    any_tool_executed = True
+                    logger.info(
+                        "[工具执行] 开始并发执行 %s 个工具调用: %s",
+                        len(tool_tasks),
+                        ", ".join(tool_internal_names),
+                    )
+                    tool_results = await asyncio.gather(
+                        *tool_tasks, return_exceptions=True
+                    )
+
+                    for i, tool_result in enumerate(tool_results):
+                        call_id = tool_call_ids[i]
+                        api_fname = tool_api_names[i]
+                        internal_fname = tool_internal_names[i]
+
+                        if isinstance(tool_result, Exception):
+                            logger.error(
+                                "[工具异常] %s (ID=%s) 执行抛出异常: %s",
+                                internal_fname,
+                                call_id,
+                                tool_result,
+                            )
+                            content_str = f"执行失败: {str(tool_result)}"
+                        else:
+                            content_str = str(tool_result)
+                            logger.debug(
+                                "[工具响应] %s (ID=%s) 返回内容长度=%s",
+                                internal_fname,
+                                call_id,
+                                len(content_str),
+                            )
+                            if logger.isEnabledFor(logging.DEBUG):
+                                log_debug_json(
+                                    logger,
+                                    f"[工具响应体] {internal_fname} (ID={call_id})",
+                                    content_str,
+                                )
+
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "name": api_fname,
+                                "content": content_str,
+                            }
+                        )
+
+                        if tool_context.get("conversation_ended"):
+                            conversation_ended = True
+                            logger.info(
+                                "[会话状态] 工具触发会话结束标记: tool=%s",
+                                internal_fname,
+                            )
+
+                # 处理 end 工具调用
+                if end_tool_call:
+                    end_call_id = end_tool_call.get("id", "")
+                    end_api_name = end_tool_call.get("function", {}).get("name", "end")
+                    if tool_tasks:
+                        # end 与其他工具同时调用：跳过执行，但必须回填 tool 响应
+                        # 以匹配 assistant.tool_calls，避免下轮请求出现未配对的 tool_call_id。
+                        skip_content = (
+                            "end 与其他工具同轮调用，本轮未执行 end；"
+                            "请根据其他工具结果继续决策。"
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": end_call_id,
+                                "name": end_api_name,
+                                "content": skip_content,
+                            }
+                        )
+                        logger.info("[工具调用] end 与其他工具同时调用，已回填跳过响应")
+                    else:
+                        # end 单独调用，正常执行（参数已在循环中解析）
+                        end_result = await self.tool_manager.execute_tool(
+                            "end", end_tool_args, tool_context
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": end_call_id,
+                                "name": end_api_name,
+                                "content": str(end_result),
+                            }
+                        )
+                        if tool_context.get("conversation_ended"):
+                            conversation_ended = True
+                            logger.info("[会话状态] end 工具触发会话结束")
+
+                if conversation_ended:
+                    logger.info("[会话状态] 对话已结束（调用 end 工具）")
+                    await _clear_inflight_on_exit()
+                    return ""
+
+            except Exception as exc:
+                if not any_tool_executed:
+                    # 尚未执行任何工具（无消息发送等副作用），安全传播给上层重试
+                    await _clear_inflight_on_exit()
+                    raise
+                logger.exception("ask 处理失败: %s", exc)
+                await _clear_inflight_on_exit()
+                return f"处理失败: {exc}"
+
+        logger.warning("[AI决策] 达到最大迭代次数，未能完成处理")
+        await _clear_inflight_on_exit()
+        return "达到最大迭代次数，未能完成处理"

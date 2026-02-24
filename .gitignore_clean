@@ -1,4 +1,4 @@
-# Python
+# Python 通用忽略规则
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,13 +20,14 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual Environment（只忽略虚拟环境本身，不拦截外层文件夹）
 venv/
 env/
 ENV/
-.venv
+.venv/  # 修复：加 / 确保只匹配文件夹，避免误拦截 .venv 文件
+!Undefined/.venv/requirements.txt  # 可选：保留虚拟环境的依赖清单
 
-# IDE
+# IDE 配置文件
 .vscode/
 .idea/
 *.swp
@@ -34,12 +35,12 @@ ENV/
 *~
 .DS_Store
 
-# Logs
+# Logs 日志文件
 *.log
 logs/
 *.log.*
 
-# Data and Cache
+# Data and Cache 数据/缓存文件
 data/
 cache/
 tmp/
@@ -50,26 +51,27 @@ temp/
 *.sqlite
 *.sqlite3
 
-# Configuration (sensitive)
+# Configuration 敏感配置文件（保留模板，忽略实际配置）
 config.json
 config.env
 .env
 *.env
+!config.example.json  # 可选：保留配置模板
 secrets.json
 credentials.json
 
-# Token Usage
+# Token Usage 令牌使用记录
 token_usage.jsonl
 token_usage_archives/
 
-# Audio Files
+# Audio Files 音频文件
 audio/
 *.wav
 *.mp3
 *.ogg
 *.flac
 
-# Images (user-generated)
+# Images 用户生成图片（保留项目封面/示例图）
 img/
 imgs/
 *.jpg
@@ -78,9 +80,9 @@ imgs/
 *.gif
 *.bmp
 user_upload/
+!docs/*.png  # 可选：保留文档里的示例图片
 
-# Temporary Files
-$null
+# Temporary Files 临时文件
 *.bak
 *.old
 test_*.py
@@ -90,48 +92,53 @@ test_*.bat
 *_配置报告.md
 *_验证报告.md
 
-# Build artifacts
+# Build artifacts 构建产物
 *.spec
 build/
 dist/
 
-# Dependencies
+# Dependencies 前端依赖
 node_modules/
 package-lock.json
 yarn.lock
 
-# Docker
+# Docker 本地覆盖配置
 docker-compose.override.yml
 
-# Testing
+# Testing 测试相关
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Project Specific
+# Project Specific 项目特有文件（取消忽略你需要的核心文件夹）
 LifeBook/
 MiroFish/
-VCPChat/
-VCPToolBox/
-Undefined/
+# VCPChat/       # 取消忽略：允许提交 VCPChat 文件夹
+# VCPToolBox/    # 取消忽略：允许提交 VCPToolBox 文件夹
+# Undefined/     # 取消忽略：允许提交 Undefined 文件夹
 references/
 archive/
 docs_archive/
 Fixlogs/
 reports/
 
-# Large files
+# Large files 大文件（避免仓库体积过大）
 *.zip
 *.tar
 *.tar.gz
 *.rar
 *.7z
 
-# Database
+# Database 数据库文件
 *.db
 *.sqlite
 neo4j/
 
-# MCP Server specific
+# MCP Server specific 服务进程文件
 *.pid
 *.lock
+
+# 修复无效规则（原 $null 无意义，删除）
+# 补充 Windows 系统文件
+Thumbs.db
+desktop.ini

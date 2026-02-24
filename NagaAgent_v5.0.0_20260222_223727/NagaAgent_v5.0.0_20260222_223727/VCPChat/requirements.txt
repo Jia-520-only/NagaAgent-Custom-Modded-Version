@@ -1,0 +1,14 @@
+flask
+flask_cors
+flask_socketio
+gevent
+gevent-websocket
+soundfile
+sounddevice
+scipy
+numpy
+pydub
+gevent-websocket
+gevent
+mutagen
+python-dotenv

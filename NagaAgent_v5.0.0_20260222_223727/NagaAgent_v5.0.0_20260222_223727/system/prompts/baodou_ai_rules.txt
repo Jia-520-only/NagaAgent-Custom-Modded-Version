@@ -1,0 +1,167 @@
+# 包豆AI视觉自动化工具规则
+
+当集成包豆AI视觉自动化功能时，应遵循以下规则：
+
+## 适用场景
+
+### 1. 复合界面操作
+**示例**:
+- "打开B站并搜索AI"
+- "帮我打开浏览器并搜索Python教程"
+
+**工具选择**:
+```json
+{
+    "agentType": "mcp",
+    "service_name": "包豆AI视觉自动化",
+    "tool_name": "baodou_analyze_task",
+    "task_description": "打开哔哩哔哩网站并搜索AI相关内容",
+    "max_iterations": 80
+}
+```
+
+### 2. 明确的界面操作
+**示例**:
+- "点击屏幕左上角的关闭按钮"
+- "拖拽文件到桌面"
+- "在搜索框中输入'AI'并点击搜索"
+
+**工具选择**:
+```json
+{
+    "agentType": "mcp",
+    "service_name": "包豆AI视觉自动化",
+    "tool_name": "baodou_mouse_click",
+    "x": 100,
+    "y": 100
+}
+```
+
+### 3. 复杂操作序列
+**示例**:
+- "帮我填写表单并提交"
+- "自动登录网站"
+
+**工具选择**:
+```json
+{
+    "agentType": "mcp",
+    "service_name": "包豆AI视觉自动化",
+    "tool_name": "baodou_analyze_task",
+    "task_description": "填写用户注册表单并提交",
+    "max_iterations": 80
+}
+```
+
+## 关键词识别
+
+| 关键词 | 对应工具 | 示例 |
+|--------|---------|------|
+| 点击 | baodou_mouse_click | "点击确认按钮" |
+| 移动到 / 拖拽 | baodou_mouse_move | "移动鼠标到坐标(100,200)" |
+| 输入 / 打字 | baodou_keyboard_type | "输入'Hello World'" |
+| 按键 / 按 | baodou_keyboard_press | "按回车键" |
+| 自动操作 / 帮我操作 | baodou_analyze_task | "帮我自动填写表单" |
+| 截屏 | baodou_capture_screen | "截取当前屏幕" |
+
+## 优先级规则
+
+1. **如果包豆AI已启用**:
+   - 优先使用包豆AI处理界面操作
+   - 特别是涉及坐标、具体UI元素的操作
+
+2. **如果包豆AI未启用**:
+   - 使用常规工具组合（应用启动+搜索等）
+   - 返回JSON数组让系统批量执行
+
+3. **工具选择冲突**:
+   - "打开B站并搜索AI"
+     - 包豆AI启用: `baodou_analyze_task` (自动分解)
+     - 包豆AI未启用: `open` + `bilibili_search` (批量执行)
+
+## 集成到conversation_analyzer_prompt.txt
+
+将以下规则添加到`conversation_analyzer_prompt.txt`:
+
+```
+**包豆AI视觉自动化工具规则**（可选）：
+- 当用户请求涉及**界面操作**时，应考虑使用 `包豆AI视觉自动化` 工具
+- 适用场景：
+  1. **复合界面操作**："打开B站并搜索AI"（可用baodou_analyze_task自动执行）
+  2. **明确的界面操作**："点击屏幕左上角的关闭按钮"、"拖拽文件到桌面"
+  3. **复杂操作序列**："帮我填写表单并提交"
+
+- 关键词识别：
+  - "点击" → baodou_mouse_click
+  - "移动到" / "拖拽" → baodou_mouse_move
+  - "输入" / "打字" → baodou_keyboard_type
+  - "按键" / "按" → baodou_keyboard_press
+  - "自动操作" / "帮我操作" → baodou_analyze_task
+
+- 优先级规则：
+  1. 如果是明确的界面操作（包含坐标、具体UI元素），优先使用包豆AI
+  2. 如果是复合操作且涉及界面，使用baodou_analyze_task让包豆AI自动分解和执行
+  3. 如果是简单的应用启动+搜索，使用现有工具（应用启动+搜索）
+
+**注意**：
+- 包豆AI默认禁用，需要用户在config.json中启用才能使用
+- 如果包豆AI未启用，使用常规工具
+```
+
+## 配置要求
+
+在`config.json`中启用包豆AI:
+
+```json
+{
+  "baodou_ai": {
+    "enabled": true,
+    "api_key": "your_doubao_api_key",
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "model_name": "doubao-seed-1-6-vision-250815",
+    "max_iterations": 80,
+    "safe_mode": true
+  }
+}
+```
+
+## 包豆AI工具列表
+
+| 工具名称 | 功能 | 参数 |
+|---------|------|------|
+| baodou_capture_screen | 截取屏幕 | 无 |
+| baodou_analyze_task | 分析任务并自动执行 | task_description, max_iterations |
+| baodou_get_status | 获取包豆AI状态 | 无 |
+| baodou_mark_coordinates | 标记坐标 | coordinates, image_path |
+| baodou_mouse_move | 移动鼠标 | x, y, duration |
+| baodou_mouse_click | 鼠标点击 | x, y, button, clicks |
+| baodou_keyboard_type | 键盘输入 | text, interval |
+| baodou_keyboard_press | 按键操作 | key, presses |
+
+## 测试用例
+
+```python
+test_cases = [
+    {
+        "input": "打开B站并搜索AI",
+        "use_baodou": True,
+        "expected_tool": "baodou_analyze_task"
+    },
+    {
+        "input": "点击屏幕左上角的关闭按钮",
+        "use_baodou": True,
+        "expected_tool": "baodou_mouse_click"
+    },
+    {
+        "input": "在搜索框输入'Python'",
+        "use_baodou": True,
+        "expected_tool": "baodou_keyboard_type"
+    }
+]
+```
+
+---
+
+**规则版本**: 1.0
+**创建时间**: 2026-01-28
+**适用系统**: NagaAgent v4.2.0+

@@ -1,0 +1,122 @@
+---
+description: 
+alwaysApply: false
+enabled: true
+updatedAt: 2026-01-16T22:28:23.066Z
+provider: 
+---
+
+# NagaAgent v4.0.0 完成检查清单
+
+## 当前状态
+项目v4.0.0的主要改造已完成，但有以下待处理事项：
+
+## 优先级1：代码提交和清理
+
+### 1.1 提交核心代码修改
+- [ ] 提交 `apiserver/api_server.py` - 移动端API路由
+- [ ] 提交 `game/core/llm_adapter.py` - PC端UI连接修复
+- [ ] 提交 `main.py` - 服务启动优化
+- [ ] 提交 `ui/controller/tool_chat.py` - 防抖机制
+- [ ] 提交 `ui/controller/tool_document.py` - API URL修复
+- [ ] 提交 `voice/output/voice_integration.py` - 语音集成优化
+
+### 1.2 提交配置相关
+- [ ] 提交 `system/config.py` - 新增配置项
+- [ ] 提交 `system/prompts/conversation_style_prompt.txt` - 提示词优化
+- [ ] 提交 `ui/components/widget_settings.py` - 设置界面改进
+
+### 1.3 提交语音相关
+- [ ] 提交 `voice/input/unified_voice_manager.py` - 统一语音管理
+- [ ] 提交 `voice/input/voice_thread_safe_simple.py` - 线程安全改进
+- [ ] 提交 `voice/input/windows_speech.py` - Windows语音识别
+- [ ] 提交 `voice/input/windows_voice_input.py` - Windows语音输入
+
+### 1.4 提交其他文件
+- [ ] 提交 `requirements.txt` - 依赖更新
+- [ ] 提交 `ui/img/standby.png` - 图片优化
+
+## 优先级2：添加新功能文件
+
+### 2.1 移动端功能
+- [ ] 添加 `apiserver/static/mobile_chat.html`
+- [ ] 添加 `setup_mobile_access.bat`
+- [ ] 添加 `QUICK_START_MOBILE.md`
+
+### 2.2 语音功能
+- [ ] 添加 `voice/auth/` 目录（声纹认证）
+- [ ] 添加 `voice/input/microphone_recorder.py`
+- [ ] 添加 `voice/input/windows_voice_input.py`
+- [ ] 添加 `voice/deploy_tts_engines.py`
+- [ ] 添加 `voice/gpt_sovits_integration.py`
+- [ ] 添加 `voice/multi_tts_integration.py`
+- [ ] 添加 `voice/start_gptsovits.py`
+
+### 2.3 UI组件
+- [ ] 添加 `ui/components/widget_voice_auth.py`
+- [ ] 添加 `ui/components/widget_voice_auth_simple.py`
+
+### 2.4 QQ/微信集成
+- [ ] 添加 `mcpserver/agent_qq_wechat/` 目录
+- [ ] 添加 `setup_qq_wechat.bat`
+- [ ] 添加 `QQ_WECHAT_INTEGRATION.md`
+- [ ] 添加 `QQ_SETUP_QUICK_START.md`
+- [ ] 添加 `QQ_TOKEN_SOLUTION.md`
+- [ ] 添加 `NAPCATQQ_TUTORIAL.md`
+- [ ] 添加 `find_napcat_token.py`
+- [ ] 添加测试脚本 `test_qq_simple.py`, `test_qq_wechat.py`
+
+### 2.5 测试和文档
+- [ ] 添加 `test_features.py`
+- [ ] 添加 `REFACTOR_SUMMARY.md`
+- [ ] 添加 `CHANGES_SUMMARY.md`
+- [ ] 添加 `FIX_DUPLICATE_RESPONSE.md`
+- [ ] 添加 `FIX_PC_UI_CONNECTION.md`
+- [ ] 添加 `GPT_SOVITS_INTEGRATION_GUIDE.md`
+- [ ] 添加 `MOBILE_CHAT_UI_REFACTOR.md`
+- [ ] 添加 `README_改造说明.md`
+- [ ] 添加 `完成检查清单.md`
+
+## 优先级3：清理和整理
+
+### 3.1 删除不需要的文件
+- [ ] 评估是否删除 `NapCatQQ-main/`（大型第三方库）
+- [ ] 清理 `Undefined/` 目录
+- [ ] 删除临时测试文件（如已验证完成）
+
+### 3.2 文档整理
+- [ ] 合并重复文档
+- [ ] 更新主 `README.md` 添加新功能说明
+- [ ] 创建版本发布说明
+
+### 3.3 版本管理
+- [ ] 更新版本号至 4.0.0
+- [ ] 创建git tag
+- [ ] 创建v4.0.0发布说明
+
+## 测试验证
+
+在提交前，需要运行以下测试：
+
+- [ ] 运行 `python test_features.py`
+- [ ] 测试移动端访问
+- [ ] 测试语音功能
+- [ ] 测试声纹认证
+- [ ] 测试QQ/微信集成（如果启用）
+- [ ] 测试PC端UI连接
+- [ ] 测试防抖机制
+
+## 发布前检查
+
+- [ ] 所有代码通过lint检查
+- [ ] 所有测试通过
+- [ ] 文档完整且准确
+- [ ] 配置文件示例更新
+- [ ] 依赖列表完整
+
+## 注意事项
+
+1. **NapCatQQ-main/** - 这是一个大型第三方库，可能需要使用git submodule或单独管理
+2. **提交顺序** - 建议按功能模块分批提交，便于代码审查
+3. **版本标记** - 完成后应创建v4.0.0标签
+4. **文档同步** - 确保英文和繁体中文版本README同步更新

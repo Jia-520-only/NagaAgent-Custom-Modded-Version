@@ -1,0 +1,193 @@
+{
+  "version": "1.0.0",
+  "displayName": "统一网页服务",
+  "description": "整合了网页搜索、内容抓取和浏览器自动化功能，提供统一的网页处理接口",
+  "author": "NagaAgent Team",
+  "homepage": "https://github.com/nagaagent/nagaagent",
+  "license": "MIT",
+  "tools": [
+    {
+      "name": "web_search",
+      "displayName": "网页搜索",
+      "description": "统一网页搜索，支持多种搜索引擎（searxng/google/bing/baidu/duckduckgo）",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "搜索关键词"
+        },
+        "engine": {
+          "type": "string",
+          "required": false,
+          "default": "searxng",
+          "description": "搜索引擎类型",
+          "enum": ["searxng", "google", "bing", "baidu", "duckduckgo"]
+        },
+        "count": {
+          "type": "integer",
+          "required": false,
+          "default": 5,
+          "description": "返回结果数量"
+        },
+        "language": {
+          "type": "string",
+          "required": false,
+          "default": "zh-CN",
+          "description": "搜索语言"
+        }
+      }
+    },
+    {
+      "name": "web_crawl",
+      "displayName": "网页抓取",
+      "description": "智能网页内容抓取，支持静态页面（requests）和动态页面（Playwright）",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "目标URL"
+        },
+        "mode": {
+          "type": "string",
+          "required": false,
+          "default": "auto",
+          "description": "抓取模式",
+          "enum": ["static", "dynamic", "auto"]
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "default": "markdown",
+          "description": "输出格式",
+          "enum": ["markdown", "html", "text"]
+        },
+        "timeout": {
+          "type": "integer",
+          "required": false,
+          "default": 30000,
+          "description": "超时时间（毫秒）"
+        }
+      }
+    },
+    {
+      "name": "web_browse",
+      "displayName": "浏览器自动化",
+      "description": "浏览器自动化操作，支持点击、输入、滚动等交互操作",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "起始URL"
+        },
+        "actions": {
+          "type": "array",
+          "required": false,
+          "description": "操作列表，例如：[{\"type\": \"click\", \"selector\": \"button\"}, {\"type\": \"input\", \"selector\": \"input\", \"value\": \"hello\"}]"
+        },
+        "screenshot": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "是否截图"
+        }
+      }
+    },
+    {
+      "name": "web_open",
+      "displayName": "打开网页",
+      "description": "使用浏览器打开网页（简化接口）",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "目标URL"
+        },
+        "browser_type": {
+          "type": "string",
+          "required": false,
+          "default": "edge",
+          "description": "浏览器类型",
+          "enum": ["edge", "chrome", "firefox"]
+        }
+      }
+    },
+    {
+      "name": "web_parse",
+      "displayName": "内容解析",
+      "description": "智能内容解析，提取关键信息（文本、链接、图片、表格）",
+      "parameters": {
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "网页内容"
+        },
+        "extract_type": {
+          "type": "string",
+          "required": false,
+          "default": "text",
+          "description": "提取类型",
+          "enum": ["text", "links", "images", "table", "all"]
+        }
+      }
+    }
+  ],
+  "config": {
+    "online_search": {
+      "searxng_url": "https://searxng.pylindex.top",
+      "default_engine": "searxng",
+      "result_count": 5,
+      "engines": ["google"]
+    },
+    "browser": {
+      "headless": true
+    },
+    "crawl4ai": {
+      "timeout": 30000
+    }
+  },
+  "dependencies": [
+    "httpx",
+    "playwright",
+    "beautifulsoup4",
+    "html2text"
+  ],
+  "examples": [
+    {
+      "tool": "web_search",
+      "description": "搜索人工智能相关信息",
+      "params": {
+        "query": "人工智能",
+        "engine": "searxng",
+        "count": 5
+      }
+    },
+    {
+      "tool": "web_crawl",
+      "description": "抓取网页内容为Markdown",
+      "params": {
+        "url": "https://www.example.com",
+        "mode": "auto",
+        "format": "markdown"
+      }
+    },
+    {
+      "tool": "web_open",
+      "description": "使用Edge浏览器打开网页",
+      "params": {
+        "url": "https://www.baidu.com",
+        "browser_type": "edge"
+      }
+    }
+  ],
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-01-28",
+      "changes": [
+        "初始版本",
+        "整合了agent_online_search、agent_crawl4ai、agent_playwright_master三个服务",
+        "提供统一的网页处理接口"
+      ]
+    }
+  ]
+}

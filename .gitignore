@@ -17,7 +17,7 @@ var/
 wheels/
 *.manifest
 # Virtual Environment
-# .venv/  # 注释：允许上传虚拟环境文件夹
+.venv/  # 恢复：忽略虚拟环境（解决文件名过长问题）
 venv/
 ENV/
 env/
@@ -106,8 +106,8 @@ audio/
 # Project-specific directories
 LifeBook/
 MiroFish/
-# VCPChat/  # 注释：允许上传VCPChat文件夹
-# VCPToolBox/  # 注释：允许上传VCPToolBox文件夹
+# VCPChat/  # 保留注释：允许提交VCPChat文件夹
+# VCPToolBox/  # 保留注释：允许提交VCPToolBox文件夹
 #Undefined/  # 原本已注释，保持不变
 references/
 archive/
