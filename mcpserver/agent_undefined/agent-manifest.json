@@ -1,4 +1,5 @@
 {
+  "name": "agent_undefined",
   "displayName": "Undefined工具集",
   "version": "2.0.0",
   "description": "提供46个实用工具，包括热搜榜、音乐搜索、B站相关、AI绘图、文件操作、网络工具、消息操作等功能",
