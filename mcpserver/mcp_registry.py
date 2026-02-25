@@ -51,10 +51,23 @@ def get_available_tools(service_name: str) -> List[Dict[str, Any]]:
     Returns:
         List[Dict[str, Any]]: 工具列表
     """
-    if service_name not in MANIFEST_CACHE:
+    if service_name not in MCP_REGISTRY:
         return []
 
-    manifest = MANIFEST_CACHE[service_name]
+    # 首先尝试从实例获取动态工具列表
+    instance = MCP_REGISTRY[service_name]
+    if hasattr(instance, 'get_available_tools'):
+        try:
+            tools = instance.get_available_tools()
+            if tools and len(tools) > 0:
+                return tools
+        except Exception as e:
+            # 如果调用失败，回退到从manifest读取
+            import logging
+            logging.warning(f"调用{service_name}的get_available_tools()失败: {e}")
+
+    # 回退到从manifest读取
+    manifest = MANIFEST_CACHE.get(service_name, {})
     # invocationCommands 在 manifest 的 capabilities 下面
     capabilities = manifest.get('capabilities', {})
     invocation_commands = capabilities.get('invocationCommands', [])

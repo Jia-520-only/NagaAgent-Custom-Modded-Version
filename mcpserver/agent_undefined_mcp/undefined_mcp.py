@@ -99,15 +99,19 @@ class UndefinedMCPServer:
             )
 
             # 获取工具和Agent注册表
-            # 新版本ToolRegistry（skills/tools目录）
-            self.new_tool_registry = NewToolRegistry()
+            # 新版本ToolRegistry（skills/tools和agents/*/tools目录）
+            new_tools_dir = UNDEFINED_SRC_PATH / "Undefined" / "skills" / "tools"
+            info_agent_tools_dir = UNDEFINED_SRC_PATH / "Undefined" / "skills" / "agents" / "info_agent" / "tools"
+            self.new_tool_registry = NewToolRegistry(new_tools_dir)
+            # 加载额外的工具目录（info_agent/tools）
+            if info_agent_tools_dir.exists():
+                self.new_tool_registry._discover_items_in_dir(info_agent_tools_dir, prefix="")
             # 旧版本ToolRegistry（tools目录，包含ai_draw_one和local_ai_draw）
             self.old_tool_registry = OldToolRegistry()
             self.agent_registry = AgentRegistry()
 
-            # 扫描并加载工具（同步方法）
+            # 扫描并加载Agent（同步方法）
             # 注意：这些是同步方法，不需要await
-            self.new_tool_registry.load_tools()
             self.agent_registry.load_agents()
 
             self._initialized = True
