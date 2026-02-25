@@ -7,6 +7,9 @@ from typing import Any
 
 import httpx
 
+from Undefined.bilibili.downloader import get_video_info, _check_ffmpeg
+from Undefined.bilibili.parser import normalize_to_bvid
+from Undefined.bilibili.sender import send_bilibili_video
 from Undefined.bilibili.wbi import parse_cookie_string
 from Undefined.bilibili.wbi_request import request_with_wbi_fallback
 from Undefined.config import get_config
@@ -211,11 +214,14 @@ def _format_items(
         link = _item_url(item)
         meta = _item_meta(item)
 
-        lines.append(f"{idx}. {title}{meta}")
-        if author:
-            lines.append(f"   作者: {author}")
+        # 标题和链接在同一行，方便直接点击
         if link:
-            lines.append(f"   链接: {link}")
+            lines.append(f"{idx}. {title} {link}{meta}")
+        else:
+            lines.append(f"{idx}. {title}{meta}")
+
+        if author:
+            lines.append(f"   UP主: {author}")
 
     return "\n".join(lines)
 
@@ -244,6 +250,156 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> str:
     query = _sanitize_text(args.get("msg"))
     if not query:
         return "请提供搜索内容。"
+
+    # 检查是否为B站视频链接，使用 parser.normalize_to_bvid 统一解析
+    bvid = await normalize_to_bvid(query)
+    if bvid:
+        # 成功解析到BV号，获取视频信息并自动下载发送
+        try:
+            config = get_config(strict=False)
+            cookie_raw = str(config.bilibili_cookie or "").strip()
+
+            video_info = await get_video_info(bvid, cookie=cookie_raw)
+
+            # 格式化视频时长
+            duration_min = video_info.duration // 60
+            duration_sec = video_info.duration % 60
+            duration_str = f"{duration_min}:{duration_sec:02d}"
+
+            # 自动下载并发送视频
+            sender = context.get("sender")
+            onebot = context.get("onebot_client") or context.get("onebot")
+            if not onebot and sender is not None and hasattr(sender, "onebot"):
+                onebot = getattr(sender, "onebot")
+
+            logger.info(f"[BilibiliSearch] sender={type(sender) if sender else None}, onebot={type(onebot) if onebot else None}")
+            logger.info(f"[BilibiliSearch] context keys={list(context.keys())}")
+
+            # 检查 ffmpeg 是否可用
+            ffmpeg_available = await _check_ffmpeg()
+            logger.info(f"[BilibiliSearch] ffmpeg_available={ffmpeg_available}")
+
+            if sender and onebot and ffmpeg_available:
+                # 解析目标会话
+                request_type = context.get("request_type")
+                target_type = None
+                target_id = None
+
+                if request_type == "group":
+                    group_id = context.get("group_id")
+                    if group_id:
+                        target_type = "group"
+                        target_id = int(group_id)
+                elif request_type == "private":
+                    user_id = context.get("user_id")
+                    if user_id:
+                        target_type = "private"
+                        target_id = int(user_id)
+                else:
+                    # 兜底逻辑
+                    group_id = context.get("group_id")
+                    if group_id:
+                        target_type = "group"
+                        target_id = int(group_id)
+                    user_id = context.get("user_id")
+                    if user_id:
+                        target_type = "private"
+                        target_id = int(user_id)
+
+                if target_type and target_id:
+                    try:
+                        # 获取运行时配置
+                        runtime_config = context.get("runtime_config", {})
+                        prefer_quality = getattr(runtime_config, "bilibili_prefer_quality", 80)
+                        max_duration = getattr(runtime_config, "bilibili_max_duration", 600)
+                        max_file_size = getattr(runtime_config, "bilibili_max_file_size", 100)
+                        oversize_strategy = getattr(runtime_config, "bilibili_oversize_strategy", "downgrade")
+
+                        # 调用 send_bilibili_video 下载并发送视频
+                        result = await send_bilibili_video(
+                            video_id=bvid,
+                            sender=sender,
+                            onebot=onebot,
+                            target_type=target_type,  # type: ignore
+                            target_id=target_id,
+                            cookie=cookie_raw,
+                            prefer_quality=prefer_quality,
+                            max_duration=max_duration,
+                            max_file_size=max_file_size,
+                            oversize_strategy=oversize_strategy,
+                        )
+
+                        # 返回视频信息（send_bilibili_video 已经发送了视频和卡片）
+                        info_lines = [
+                            f"📺 已获取到B站视频信息：",
+                            f"**视频标题**：{video_info.title}",
+                            f"**UP主**：{video_info.up_name}",
+                            f"**视频时长**：{duration_str}",
+                            f"**视频封面**：{video_info.cover_url}",
+                            f"**视频链接**：https://www.bilibili.com/video/{video_info.bvid}",
+                        ]
+                        # 添加视频简介（如果有的话）
+                        if video_info.desc:
+                            info_lines.append(f"**视频简介**：{video_info.desc[:500]}")  # 限制长度避免过长
+                        # 添加发送结果提示
+                        if result and "失败" in result and "ffmpeg" in result.lower():
+                            info_lines.append(f"\n⚠️ 视频下载失败（需要安装 ffmpeg），已发送视频信息卡片")
+                        elif result and "失败" not in result:
+                            info_lines.append(f"\n✅ {result}")
+                        return "\n".join(info_lines)
+
+                    except Exception as exc:
+                        logger.warning(f"下载发送视频失败 {bvid}: {exc}")
+                        # 即使下载失败，也返回视频信息
+                        info_lines = [
+                            f"📺 已获取到B站视频信息：",
+                            f"**视频标题**：{video_info.title}",
+                            f"**UP主**：{video_info.up_name}",
+                            f"**视频时长**：{duration_str}",
+                            f"**视频封面**：{video_info.cover_url}",
+                            f"**视频链接**：https://www.bilibili.com/video/{video_info.bvid}",
+                        ]
+                        # 添加视频简介（如果有的话）
+                        if video_info.desc:
+                            info_lines.append(f"**视频简介**：{video_info.desc[:500]}")  # 限制长度避免过长
+                        return "\n".join(info_lines)
+                else:
+                    # 即使无法发送，也返回视频信息
+                    info_lines = [
+                        f"📺 已获取到B站视频信息：",
+                        f"**视频标题**：{video_info.title}",
+                        f"**UP主**：{video_info.up_name}",
+                        f"**视频时长**：{duration_str}",
+                        f"**视频封面**：{video_info.cover_url}",
+                        f"**视频链接**：https://www.bilibili.com/video/{video_info.bvid}",
+                    ]
+                    # 添加视频简介（如果有的话）
+                    if video_info.desc:
+                        info_lines.append(f"**视频简介**：{video_info.desc[:500]}")  # 限制长度避免过长
+                    return "\n".join(info_lines)
+            else:
+                # 即使无法发送，也返回视频信息
+                info_lines = [
+                    f"📺 已获取到B站视频信息：",
+                    f"**视频标题**：{video_info.title}",
+                    f"**UP主**：{video_info.up_name}",
+                    f"**视频时长**：{duration_str}",
+                    f"**视频封面**：{video_info.cover_url}",
+                    f"**视频链接**：https://www.bilibili.com/video/{video_info.bvid}",
+                ]
+                # 添加视频简介（如果有的话）
+                if video_info.desc:
+                    info_lines.append(f"**视频简介**：{video_info.desc[:500]}")  # 限制长度避免过长
+                return "\n".join(info_lines)
+
+        except Exception as exc:
+            logger.warning(f"获取视频信息失败 {bvid}: {exc}")
+            # 即使获取失败，也返回视频链接
+            lines = [
+                f"📺 已获取到B站视频信息：",
+                f"**视频链接**：https://www.bilibili.com/video/{bvid}",
+            ]
+            return "\n".join(lines)
 
     limit = _to_positive_int(args.get("n", 5), 5)
     limit = max(1, min(limit, 20))

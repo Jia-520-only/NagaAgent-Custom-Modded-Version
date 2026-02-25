@@ -67,17 +67,17 @@ class TaskServiceManager:
                 logger.info("[任务服务] 情境感知功能未启用")
                 return
 
-            # 初始化情境分析器
+            # 初始化情境分析器（同步函数，不需要await）
             from system.context_analyzer import get_context_analyzer
-            self._context_analyzer = await get_context_analyzer()
+            self._context_analyzer = get_context_analyzer()
             logger.info("[任务服务] 情境分析器已加载")
 
-            # 初始化对话生成器
+            # 初始化对话生成器（异步函数，需要await）
             from system.conversation_generator import get_conversation_generator
             self._conversation_generator = await get_conversation_generator()
             logger.info("[任务服务] 对话生成器已加载")
 
-            # 初始化频率调节器
+            # 初始化频率调节器（同步函数，不需要await）
             from system.frequency_regulator import get_frequency_regulator
             self._frequency_regulator = get_frequency_regulator()
             logger.info("[任务服务] 频率调节器已加载")

@@ -5,8 +5,11 @@ Undefined MCP Server
 import asyncio
 import sys
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # 添加Undefined到Python路径
 UNDEFINED_PATH = Path(__file__).parent.parent.parent / "Undefined"
@@ -176,30 +179,32 @@ class UndefinedMCPServer:
             return {"error": "Undefined MCP Server 未初始化"}
 
         try:
-            print(f"[UndefinedMCP] call_tool: tool_name={tool_name}, arguments keys={list(arguments.keys())}")
+            logger.info(f"[UndefinedMCP] call_tool: tool_name={tool_name}, arguments keys={list(arguments.keys())}")
+            if context:
+                logger.info(f"[UndefinedMCP] context keys={list(context.keys())}")
 
             # 检查是否是直接的 agent 名称(如 info_agent)
             if self.agent_registry and tool_name in self.agent_registry._items:
-                print(f"[UndefinedMCP] 找到Agent: {tool_name}")
+                logger.info(f"[UndefinedMCP] 找到Agent: {tool_name}")
                 return await self._call_agent(tool_name, arguments, context)
 
             # 检查是否是直接的 tool 名称（优先旧版本，如 ai_draw_one, local_ai_draw）
             if self.old_tool_registry and tool_name in self.old_tool_registry._tools_handlers:
-                print(f"[UndefinedMCP] 找到旧版工具: {tool_name}")
+                logger.info(f"[UndefinedMCP] 找到旧版工具: {tool_name}")
                 return await self._call_old_tool_internal(tool_name, arguments, context)
 
             # 检查是否是新版本的 tool 名称(如 get_current_time)
             if self.new_tool_registry and tool_name in self.new_tool_registry._items:
-                print(f"[UndefinedMCP] 找到新版工具: {tool_name}")
+                logger.info(f"[UndefinedMCP] 找到新版工具: {tool_name}")
                 return await self._call_new_tool_internal(tool_name, arguments, context)
 
             # 打印调试信息：工具列表
             if self.old_tool_registry:
                 old_tool_names = list(self.old_tool_registry._tools_handlers.keys())
-                print(f"[UndefinedMCP] 可用旧版工具列表: {old_tool_names[:20]}...")
+                logger.debug(f"[UndefinedMCP] 可用旧版工具列表: {old_tool_names[:20]}...")
             if self.new_tool_registry:
                 new_tool_names = list(self.new_tool_registry._items.keys())
-                print(f"[UndefinedMCP] 可用新版工具列表: {new_tool_names[:20]}...")
+                logger.debug(f"[UndefinedMCP] 可用新版工具列表: {new_tool_names[:20]}...")
 
             # 解析工具名称(支持 tool.tool_name 或 agent.agent_name 格式)
             # 兼容不带前缀的工具名称（如 ai_draw_one）
@@ -213,11 +218,11 @@ class UndefinedMCPServer:
             if len(parts) == 2:
                 # 有前缀: tool.tool_name 或 agent.agent_name
                 tool_type, tool_id = parts
-                print(f"[UndefinedMCP] 解析前缀工具: type={tool_type}, id={tool_id}")
+                logger.info(f"[UndefinedMCP] 解析前缀工具: type={tool_type}, id={tool_id}")
                 if tool_type == "tool":
                     # 检查是否是 entertainment_agent 的子工具
                     if tool_id in entertainment_subtools:
-                        print(f"[UndefinedMCP] 识别到 {tool_id} 为 entertainment_agent 子工具")
+                        logger.info(f"[UndefinedMCP] 识别到 {tool_id} 为 entertainment_agent 子工具")
                         # 构建prompt来调用entertainment_agent
                         prompt = f"请执行{entertainment_subtools[tool_id]}功能: {arguments.get('prompt', '')}"
                         return await self._call_agent("entertainment_agent", {"prompt": prompt}, context)
@@ -234,10 +239,10 @@ class UndefinedMCPServer:
                     return {"error": f"未知的工具类型: {tool_type}"}
             else:
                 # 无前缀，尝试直接匹配工具和Agent
-                print(f"[UndefinedMCP] 无前缀工具，尝试直接匹配: {tool_name}")
+                logger.info(f"[UndefinedMCP] 无前缀工具，尝试直接匹配: {tool_name}")
                 # 首先检查是否是 entertainment_agent 的子工具
                 if tool_name in entertainment_subtools:
-                    print(f"[UndefinedMCP] 识别到 {tool_name} 为 entertainment_agent 子工具")
+                    logger.info(f"[UndefinedMCP] 识别到 {tool_name} 为 entertainment_agent 子工具")
                     prompt = f"请执行{entertainment_subtools[tool_name]}功能: {arguments.get('prompt', '')}"
                     return await self._call_agent("entertainment_agent", {"prompt": prompt}, context)
                 # 然后尝试旧版工具（ai_draw_one 和 local_ai_draw）
@@ -255,7 +260,7 @@ class UndefinedMCPServer:
         except Exception as e:
             import traceback
             error_msg = f"调用工具失败: {e}"
-            print(f"错误详情: {traceback.format_exc()}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             return {"error": error_msg}
     
     async def _call_old_tool_internal(
@@ -481,12 +486,30 @@ class UndefinedMCPServer:
             if context is None:
                 context = {}
 
-            # 注入ai_client到context
+            # 记录接收到的context
+            logger.info(f"[UndefinedMCP] _call_agent({agent_name}): context keys={list(context.keys())}")
+
+            # 尝试从MCP注册中心获取QQ适配器实例并注入到context
+            try:
+                from mcpserver.mcp_registry import get_service_info
+
+                qq_service = get_service_info("QQ/微信集成")
+                if qq_service:
+                    qq_agent = qq_service.get("instance")
+                    if qq_agent and hasattr(qq_agent, 'qq_adapter'):
+                        qq_adapter = qq_agent.qq_adapter
+                        context["sender"] = qq_adapter
+                        context["onebot_client"] = qq_adapter
+                        logger.info(f"[UndefinedMCP] 已注入 onebot_client 到 context")
+            except Exception as e:
+                logger.warning(f"[UndefinedMCP] 注入 onebot_client 失败: {e}")
+
+            # 注入ai_client到context（保留原始context中的其他参数）
             context["ai_client"] = self.ai_client
 
             # 调用agent的execute方法 (使用SkillItem对象的handler属性)
             result = await self.agent_registry.execute(agent_name, arguments, context)
-            
+
             return {
                 "result": result,
                 "agent": agent_name,
@@ -495,7 +518,7 @@ class UndefinedMCPServer:
         except Exception as e:
             import traceback
             error_msg = f"Agent {agent_name} 调用失败: {e}"
-            print(f"错误详情: {traceback.format_exc()}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             return {"error": error_msg, "agent": agent_name, "success": False}
     
     async def shutdown(self):

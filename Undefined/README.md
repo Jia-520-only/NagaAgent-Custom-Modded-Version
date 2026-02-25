@@ -48,7 +48,7 @@
     - [5. 跨平台与资源路径（重要）](#5-跨平台与资源路径重要)
   - [配置说明](#配置说明)
     - [配置热更新说明](#配置热更新说明)
-    - [会话白名单示例](#会话白名单示例)
+    - [访问控制文档](#访问控制文档)
   - [MCP 配置](#mcp-配置)
     - [Agent 私有 MCP（可选）](#agent-私有-mcp可选)
 - [使用说明](#使用说明)
@@ -78,11 +78,12 @@
 - **Skills 架构**：全新设计的技能系统，将基础工具（Tools）与智能代理（Agents）分层管理，支持自动发现与注册。
 - **Skills 热重载**：自动扫描 `skills/` 目录，检测到变更后即时重载工具与 Agent，无需重启服务。
 - **配置热更新 + WebUI**：使用 `config.toml` 配置，支持热更新；提供 WebUI 在线编辑与校验。
-- **会话白名单（群/私聊）**：只需配置 `access.allowed_group_ids` / `access.allowed_private_ids` 两个列表，即可把机器人“锁”在指定群与指定私聊里；避免被拉进陌生群误触发、也避免工具/定时任务把消息误发到不该去的地方（默认留空不限制）。
-- **并发防重复执行（进行中摘要）**：对私聊与 `@机器人` 场景在首轮前预占位，并在后续请求注入 `【进行中的任务】` 上下文，减少"催促/追问"导致的重复任务执行；支持通过 `features.inflight_pre_register_enabled`（预注册占位，默认启用）和 `features.inflight_summary_enabled`（摘要生成，默认禁用）独立控制。
+- **多模型池**：支持配置多个 AI 模型，可轮询、随机选择或用户指定；支持多模型并发比较，选择最佳结果继续对话。详见 [多模型功能文档](docs/multi-model.md)。
+- **本地知识库**：将纯文本文件向量化存入 ChromaDB，AI 可通过关键词搜索或语义搜索查询领域知识；支持增量嵌入与自动扫描。详见 [知识库文档](docs/knowledge.md)。
+- **访问控制（群/私聊）**：支持 `access.mode` 三种模式（`off` / `blacklist` / `allowlist`）和群/私聊黑白名单；可按策略限制收发范围，避免误触发与误投递。详见 [docs/access-control.md](docs/access-control.md)。
 - **并行工具执行**：无论是主 AI 还是子 Agent，均支持 `asyncio` 并发工具调用，大幅提升多任务处理速度（如同时读取多个文件或搜索多个关键词）。
 - **智能 Agent 矩阵**：内置多个专业 Agent，分工协作处理复杂任务。
-- **Agent 互调用**：Agent 之间可以相互调用，通过简单的配置文件（`callable.json`）即可让某个 Agent 成为其他 Agent 的工具，支持细粒度的访问控制，实现复杂的多 Agent 协作场景。
+- **callable.json 共享机制**：通过简单的配置文件（`callable.json`）即可让 Agent 互相调用、将 `skills/tools/` 或 `skills/toolsets/` 下的工具按白名单暴露给 Agent，支持细粒度访问控制，实现复杂的多 Agent 协作场景。
 - **Agent 自我介绍自动生成**：启动时按 Agent 代码/配置 hash 生成 `intro.generated.md`（第一人称、结构化），与 `intro.md` 合并后作为描述；减少手动维护，保持能力说明与实现同步，有助于精准调度。
 - **请求上下文管理**：基于 Python `contextvars` 的统一请求上下文系统，自动 UUID 追踪，零竞态条件，完全的并发隔离。
 - **定时任务系统**：支持 Crontab 语法的强大定时任务系统，可自动执行各种操作（如定时提醒、定时搜索）。
@@ -476,23 +477,15 @@ uv run Undefined-webui
   - `process_private_message`：是否处理私聊消息；关闭后仅记录私聊历史，不触发 AI 回复
   - `process_poke_message`：是否响应拍一拍事件
   - `context_recent_messages_limit`：注入给模型的最近历史消息条数上限（`0-200`，`0` 表示不注入）
-- **会话白名单（推荐）**：`[access]`
-  - `allowed_group_ids`：允许处理/发送消息的群号列表
-  - `allowed_private_ids`：允许处理/发送消息的私聊 QQ 列表
-  - `superadmin_bypass_allowlist`：超级管理员是否可在私聊中绕过 `allowed_private_ids`（仅影响私聊收发；群聊仍严格按 `allowed_group_ids`）
-  - 规则：只要 `allowed_group_ids` 或 `allowed_private_ids` 任一非空，就会启用限制模式；未在白名单内的群/私聊消息将被直接忽略，且所有消息发送也会被拦截（包括工具调用与定时任务）。
-- **模型配置**：`[models.chat]` / `[models.vision]` / `[models.agent]` / `[models.security]` / `[models.inflight_summary]`
+- **访问控制（推荐）**：`[access]` 支持 `off` / `blacklist` / `allowlist`，并可配置群/私聊黑白名单与 superadmin 私聊绕过策略。完整字段、规则与示例见 [docs/access-control.md](docs/access-control.md)。
+- **模型配置**：`[models.chat]` / `[models.vision]` / `[models.agent]` / `[models.security]`
   - `api_url`：OpenAI 兼容 **base URL**（如 `https://api.openai.com/v1` / `http://127.0.0.1:8000/v1`）
   - `models.security.enabled`：是否启用安全模型检测（默认开启）
-  - `queue_interval_seconds`：队列发车间隔（秒），每个模型独立生效
-  - `models.inflight_summary`：并发防重的“进行中摘要”模型（可选）；当 `api_url/api_key/model_name` 任一缺失时，会自动回退到 `models.chat`
   - DeepSeek Thinking + Tool Calls：若使用 `deepseek-reasoner` 或 `deepseek-chat` + `thinking={"type":"enabled"}` 且启用了工具调用，建议启用 `deepseek_new_cot_support`
 - **日志配置**：`[logging]`
   - `tty_enabled`：是否输出到终端 TTY（默认 `false`）；关闭后仅写入日志文件
 - **功能开关（可选）**：`[features]`
   - `nagaagent_mode_enabled`：是否启用 NagaAgent 模式（开启后使用 `res/prompts/undefined_nagaagent.xml` 并暴露相关 Agent；关闭时使用 `res/prompts/undefined.xml` 并隐藏/禁用相关 Agent）
-  - `inflight_pre_register_enabled`：是否预注册进行中占位（默认 `true`）。启用后在首轮前预占位，防止重复执行
-  - `inflight_summary_enabled`：是否生成进行中任务摘要（默认 `false`）。启用后会调用模型生成动作摘要，需要额外 API 调用
 - **彩蛋（可选）**：`[easter_egg]`
   - `keyword_reply_enabled`：是否启用群聊关键词自动回复（如“心理委员”，默认关闭）
 - **Token 统计归档**：`[token_usage]`（默认 5MB，<=0 禁用）
@@ -506,8 +499,9 @@ uv run Undefined-webui
   - `oversize_strategy`：超限策略（`downgrade`=降低清晰度重试, `info`=发送封面+标题+简介）
   - `auto_extract_group_ids` / `auto_extract_private_ids`：自动提取功能白名单（空=跟随全局 access）
   - 系统依赖：需安装 `ffmpeg`
-- **消息工具（单文件发送）**：`[messages]`
+- **消息工具**：`[messages]`
   - `send_text_file_max_size_kb`：`messages.send_text_file` 单文件文本发送大小上限（KB），默认 `512`（`0.5MB`）
+  - `send_url_file_max_size_mb`：`messages.send_url_file` URL 文件发送大小上限（MB），默认 `100`
   - 建议：单文件、轻量任务优先用 `messages.send_text_file`；多文件工程或需要执行验证/打包交付优先用 `code_delivery_agent`
 - **代理设置（可选）**：`[proxy]`
 - **WebUI**：`[webui]`（默认 `127.0.0.1:8787`，密码默认 `changeme`，启动 `uv run Undefined-webui`）
@@ -526,37 +520,9 @@ WebUI 支持：配置分组表单快速编辑、Diff 预览、日志尾部查看
 - 需重启生效的项（黑名单）：`log_level`、`logging.file_path`、`logging.max_size_mb`、`logging.backup_count`、`logging.tty_enabled`、`onebot.ws_url`、`onebot.token`、`webui.url`、`webui.port`、`webui.password`
 - 模型发车节奏：`models.*.queue_interval_seconds` 支持热更新并立即生效
 
-#### 防重复执行机制（进行中摘要）
+#### 访问控制文档
 
-- 目标：降低并发场景下同一任务被重复执行（例如"写个 X"后立刻"写快点/它可以吗"）
-- 机制：
-  - **预注册占位**：对私聊和 `@机器人/拍一拍` 触发的会话，首轮模型调用前预注册"进行中任务"占位
-  - **摘要生成**（可选）：异步调用模型生成动作摘要（如"正在搜索信息"），丰富进行中提示
-  - 后续请求会在系统上下文注入 `【进行中的任务】`，引导模型走"轻量回复 + end"而非重跑业务 Agent
-  - 首轮若仅调用 `end`，占位会立即清除
-- 配置：
-  - 预注册开关：`[features].inflight_pre_register_enabled`（默认 `true`，防止重复执行）
-  - 摘要开关：`[features].inflight_summary_enabled`（默认 `false`，需要额外 API 调用）
-  - 摘要模型：`[models.inflight_summary]`（可选，缺省自动回退 `models.chat`）
-- 格式示例：
-  - 预注册（pending）：`[2024-01-01T12:00:00+08:00] [group:测试群(123456)] 正在处理消息："帮我搜索天气"`
-  - 摘要就绪（ready）：`[2024-01-01T12:00:00+08:00] [group:测试群(123456)] 正在处理消息："帮我搜索天气"（正在调用天气查询工具）`
-- 观测日志关键字：
-  - `首轮前预占位`
-  - `注入进行中任务`
-  - `首轮仅end，已清理占位`
-  - `已投递摘要生成`
-
-#### 会话白名单示例
-
-把机器人限定在 2 个群 + 1 个私聊（最常见的“安全上车”配置）：
-
-```toml
-[access]
-allowed_group_ids = [123456789, 987654321]
-allowed_private_ids = [1122334455]
-superadmin_bypass_allowlist = true
-```
+访问控制的完整字段、判定规则和配置示例请查看：[docs/access-control.md](docs/access-control.md)
 
 > 启动项目需要 OneBot 协议端，推荐使用 [NapCat](https://napneko.github.io/) 或 [Lagrange.Core](https://github.com/LagrangeDev/Lagrange.Core)。
 
@@ -673,7 +639,7 @@ src/Undefined/
 
 请参考 [src/Undefined/skills/README.md](src/Undefined/skills/README.md) 了解如何编写新的工具和 Agent。
 
-**Agent 互调用与主工具共享**：查看 [docs/agent-calling.md](docs/agent-calling.md) 了解如何让 Agent 之间相互调用，以及如何将 `skills/tools` 下的主工具按白名单暴露给 Agent。
+**callable.json 共享机制**：查看 [docs/callable.md](docs/callable.md) 了解如何让 Agent 之间相互调用，以及如何将 `skills/tools` 或 `skills/toolsets` 下的工具按白名单暴露给 Agent。
 
 ### 开发自检
 
@@ -686,6 +652,7 @@ uv run mypy .
 ## 文档与延伸阅读
 
 - 架构说明：[`ARCHITECTURE.md`](ARCHITECTURE.md)
+- 访问控制：[`docs/access-control.md`](docs/access-control.md)
 - Skills 总览：[`src/Undefined/skills/README.md`](src/Undefined/skills/README.md)
 - Agents 开发：[`src/Undefined/skills/agents/README.md`](src/Undefined/skills/agents/README.md)
 - Tools 开发：[`src/Undefined/skills/tools/README.md`](src/Undefined/skills/tools/README.md)

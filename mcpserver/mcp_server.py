@@ -251,17 +251,12 @@ async def initialize_undefined_agent():
                             loop.run_until_complete(agent.initialize())
                         finally:
                             loop.close()
-                    # 获取工具数量（异步方法）
+                    # 获取工具数量（同步方法）
                     tool_count = 0
                     if hasattr(agent, 'get_available_tools'):
                         try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            try:
-                                tools = loop.run_until_complete(agent.get_available_tools())
-                                tool_count = len(tools)
-                            finally:
-                                loop.close()
+                            tools = agent.get_available_tools()
+                            tool_count = len(tools)
                         except Exception as e:
                             logger.warning(f"获取Undefined工具列表失败: {e}")
                     logger.info(f"✅ Undefined工具集初始化完成，共 {tool_count} 个工具")

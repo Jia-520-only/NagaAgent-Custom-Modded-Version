@@ -1,0 +1,12 @@
+Collecting bilibili-api
+  Using cached bilibili_api-9.1.0-py3-none-any.whl.metadata (6.7 kB)
+Collecting pydub
+  Using cached pydub-0.25.1-py2.py3-none-any.whl.metadata (1.4 kB)
+Collecting pystray
+  Using cached pystray-0.19.5-py2.py3-none-any.whl.metadata (9.4 kB)
+Downloading bilibili_api-9.1.0-py3-none-any.whl (106 kB)
+Using cached pydub-0.25.1-py2.py3-none-any.whl (32 kB)
+Using cached pystray-0.19.5-py2.py3-none-any.whl (49 kB)
+Installing collected packages: pystray, pydub, bilibili-api
+
+Successfully installed bilibili-api-9.1.0 pydub-0.25.1 pystray-0.19.5

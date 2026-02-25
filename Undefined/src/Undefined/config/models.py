@@ -1,6 +1,32 @@
 """配置模型定义"""
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ModelPoolEntry:
+    """模型池中的单个模型条目（已合并缺省值后的完整配置）"""
+
+    api_url: str
+    api_key: str
+    model_name: str
+    max_tokens: int
+    queue_interval_seconds: float = 1.0
+    thinking_enabled: bool = False
+    thinking_budget_tokens: int = 0
+    thinking_include_budget: bool = True
+    thinking_tool_call_compat: bool = False
+
+
+@dataclass
+class ModelPool:
+    """模型池配置"""
+
+    enabled: bool = True  # 是否启用模型池功能
+    strategy: str = "default"  # "default" | "round_robin" | "random"
+    models: list[ModelPoolEntry] = field(default_factory=list)
 
 
 @dataclass
@@ -18,6 +44,7 @@ class ChatModelConfig:
     thinking_tool_call_compat: bool = (
         False  # 思维链 + 工具调用兼容（回传 reasoning_content）
     )
+    pool: ModelPool | None = None  # 模型池配置
 
 
 @dataclass
@@ -54,6 +81,30 @@ class SecurityModelConfig:
 
 
 @dataclass
+class EmbeddingModelConfig:
+    """嵌入模型配置"""
+
+    api_url: str
+    api_key: str
+    model_name: str
+    queue_interval_seconds: float = 1.0
+    dimensions: int | None = None
+    query_instruction: str = ""  # 查询端指令前缀（如 Qwen3-Embedding 需要）
+    document_instruction: str = ""  # 文档端指令前缀（如 E5 系列需要 "passage: "）
+
+
+@dataclass
+class RerankModelConfig:
+    """重排模型配置"""
+
+    api_url: str
+    api_key: str
+    model_name: str
+    queue_interval_seconds: float = 1.0
+    query_instruction: str = ""  # 查询端指令前缀（如部分 rerank 模型需要）
+
+
+@dataclass
 class AgentModelConfig:
     """Agent 模型配置（用于执行 agents）"""
 
@@ -68,45 +119,4 @@ class AgentModelConfig:
     thinking_tool_call_compat: bool = (
         False  # 思维链 + 工具调用兼容（回传 reasoning_content）
     )
-
-
-@dataclass
-class InflightSummaryModelConfig:
-    """进行中任务摘要模型配置。"""
-
-    api_url: str
-    api_key: str
-    model_name: str
-    max_tokens: int = 128
-    queue_interval_seconds: float = 1.5
-    thinking_enabled: bool = False
-    thinking_budget_tokens: int = 0
-    thinking_include_budget: bool = False
-    thinking_tool_call_compat: bool = False
-
-
-@dataclass
-class OnlineAIDrawConfig:
-    """在线AI绘图配置"""
-
-    api_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    api_key: str = ""
-    default_model: str = "cogview-3"
-    default_size: str = "1:1"
-    provider: str = "zhipu"
-    timeout: int = 120
-
-
-@dataclass
-class LocalAIDrawConfig:
-    """本地AI绘图配置（Stable Diffusion）"""
-
-    service_url: str = "http://127.0.0.1:7860"
-    service_type: str = "sd_webui"
-    model: str = ""
-    width: int = 512
-    height: int = 512
-    steps: int = 20
-    cfg_scale: float = 7.0
-    sampler: str = "DPM++ 2M Karras"
-    timeout: int = 300
+    pool: ModelPool | None = None  # 模型池配置

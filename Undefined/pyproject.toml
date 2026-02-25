@@ -1,6 +1,6 @@
 [project]
 name = "Undefined-bot"
-version = "2.13.0"
+version = "2.15.0"
 description = "A high-performance, highly scalable QQ group and private chat robot based on a self-developed architecture."
 readme = "README.md"
 authors = [
@@ -45,6 +45,7 @@ dependencies = [
     "psutil>=7.2.2",
     "pyyaml>=6.0.3",
     "pypinyin>=0.53.0",
+    "chromadb>=0.6.0",
 ]
 
 [project.urls]

@@ -153,8 +153,31 @@ async def _download_stream(
                 f.write(chunk)
 
 
+async def _check_ffmpeg() -> bool:
+    """检查 ffmpeg 是否可用"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        return proc.returncode == 0
+    except FileNotFoundError:
+        return False
+
 async def _merge_av(video_path: Path, audio_path: Path, output_path: Path) -> None:
     """用 ffmpeg 合并音视频流。"""
+    # 检查 ffmpeg 是否可用
+    if not await _check_ffmpeg():
+        raise RuntimeError(
+            "ffmpeg 未安装或未配置到环境变量 PATH 中。"
+            "无法合并 B 站音视频流。"
+            "请访问 https://www.gyan.dev/ffmpeg/builds/ 下载并安装 ffmpeg，"
+            "将 bin 目录添加到系统环境变量 PATH 中。"
+        )
+
     cmd = [
         "ffmpeg",
         "-y",

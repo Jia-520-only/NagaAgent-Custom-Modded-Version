@@ -195,7 +195,7 @@ class VoiceIntegration:
                 if sentence_stripped:
                     # 跳过仅由标点符号组成的句子（包括语气停顿符号）
                     # 使用原始字符串避免转义警告
-                    if re.match(r'^[~…….,;:!?，。！？、；：""''"（）【】《】\s]+$', sentence_stripped):
+                    if re.match(r'^[~…….,;:!?，。！？、；：""''"（）【】《】\\s]+$', sentence_stripped):
                         logger.debug(f"跳过纯标点句子: {sentence_stripped}")
                     else:
                         # 加入句子队列

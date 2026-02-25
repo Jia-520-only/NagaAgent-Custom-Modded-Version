@@ -32,13 +32,6 @@ from Undefined.utils.paths import (
     ensure_dir,
 )
 
-from Undefined.utils.self_update import (
-    GitUpdatePolicy,
-    apply_git_update,
-    format_update_result,
-    restart_process,
-)
-
 
 def ensure_runtime_dirs() -> None:
     """确保运行时目录存在"""
@@ -140,20 +133,8 @@ async def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info("[启动] 正在初始化 Undefined 机器人...")
 
-    # Git-based auto update (only for official origin/main).
-    try:
-        update_result = await asyncio.to_thread(apply_git_update, GitUpdatePolicy())
-        logger.info("[自更新] %s", format_update_result(update_result))
-        if update_result.updated and update_result.repo_root is not None:
-            if update_result.uv_sync_attempted and not update_result.uv_synced:
-                logger.warning(
-                    "[自更新] 代码已更新但 uv sync 失败，跳过自动重启（避免启动失败）"
-                )
-            else:
-                logger.warning("[自更新] 检测到更新，正在重启进程以加载新代码...")
-                restart_process(module="Undefined", chdir=update_result.repo_root)
-    except Exception as exc:
-        logger.warning("[自更新] 检查更新失败，将继续启动: %s", exc)
+    # 自动更新功能已移除（魔改版不需要远程更新）
+    # 如需更新代码，请手动运行 git pull 或下载新版本
 
     start_time = time.perf_counter()
     try:
@@ -200,6 +181,52 @@ async def main() -> None:
             runtime_config=config,
         )
         faq_storage = FAQStorage()
+
+        if config.knowledge_enabled:
+            from Undefined.knowledge import Embedder, KnowledgeManager, Reranker
+
+            if (
+                not config.embedding_model.api_url
+                or not config.embedding_model.model_name
+            ):
+                raise ValueError(
+                    "知识库已启用，但 models.embedding.api_url / model_name 未配置完整"
+                )
+
+            _embedder = Embedder(
+                ai._requester,
+                config.embedding_model,
+                batch_size=config.knowledge_embed_batch_size,
+            )
+            _embedder.start()
+            _reranker: Reranker | None = None
+            if (
+                config.rerank_model.api_url
+                and config.rerank_model.model_name
+                and config.knowledge_enable_rerank
+            ):
+                _reranker = Reranker(ai._requester, config.rerank_model)
+                _reranker.start()
+            elif config.knowledge_enable_rerank:
+                logger.warning(
+                    "[知识库] 已启用重排，但 models.rerank 未配置完整，重排将自动禁用"
+                )
+            knowledge_manager = KnowledgeManager(
+                base_dir=config.knowledge_base_dir,
+                embedder=_embedder,
+                reranker=_reranker,
+                default_top_k=config.knowledge_default_top_k,
+                chunk_size=config.knowledge_chunk_size,
+                chunk_overlap=config.knowledge_chunk_overlap,
+                rerank_enabled=config.knowledge_enable_rerank,
+                rerank_top_k=config.knowledge_rerank_top_k,
+            )
+            ai.set_knowledge_manager(knowledge_manager)
+            if config.knowledge_auto_scan and config.knowledge_auto_embed:
+                knowledge_manager.start_auto_scan(config.knowledge_scan_interval)
+            elif config.knowledge_auto_embed:
+                knowledge_manager.start_initial_scan()
+            logger.info("[知识库] 初始化完成: base_dir=%s", config.knowledge_base_dir)
 
         handler = MessageHandler(config, onebot, ai, faq_storage, task_storage)
         onebot.set_message_handler(handler.handle_message)

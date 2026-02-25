@@ -751,25 +751,28 @@ class QQWeChatMessageListener:
 /语音 - 只发送语音消息
 /文字 - 只发送文字消息
 /两者 - 同时发送语音和文字（默认）
-/模式 - 查看当前模式
+/模式 - 查看当前回复模式
 /配置 或 /config - 查看当前配置
 /设置 [键] [值] - 更改配置项
-/工具 - 查看可用的工具
-/天气 [城市] - 直接查询天气
+/工具 或 /tools - 查看所有可用工具
+
+【快捷查询】
+/天气 [城市] - 直接查询天气（默认：北京）
 /搜索 [关键词] - 直接搜索内容
-/画 [内容] - AI绘图（在线）
-/本地画 [内容] - AI绘图（本地模型）
+/画 [内容] - AI在线绘图
+/本地画 [内容] - AI本地绘图（需配置）
 /render [内容] - 渲染图片（Markdown/LaTeX）
-/打电话 - 发起QQ语音通话（仅私聊）
-/group_call [群号] - 发起群语音通话
+/打电话 - 发起QQ语音通话（仅私聊，需启用）
+/group_call [群号] - 发起群语音通话（需启用）
 
 【配置说明】
 可用配置项：
 • reply_mode: 回复模式（voice/text/both）
 • enable_voice: 是否启用语音（true/false）
+• enable_undefined_tools: 是否启用Undefined工具（true/false）
 • enable_qq_call: 是否启用QQ电话功能（true/false）
 
-示例：
+【配置示例】
 • /设置 reply_mode text - 切换为文字模式
 • /设置 reply_mode both - 切换为语音+文字模式
 • /设置 enable_voice true - 启用语音
@@ -827,8 +830,19 @@ class QQWeChatMessageListener:
    - 双子座的运势
    - 白羊座本周运势
 
-💡 提示：工具会根据你的消息内容自动触发，无需记忆命令！
-💡 本地绘图需要先配置，详见：LOCAL_AI_DRAW_CONFIG.md
+📱 社交功能：
+   - 给我点个赞
+   - /打电话（私聊）
+
+🛠️ 开发工具：
+   - ping一下百度
+   - 测试网络速度
+
+💡 使用提示：
+• 工具会根据你的消息内容自动触发，无需记忆命令！
+• 本地绘图需要先配置，详见：LOCAL_AI_DRAW_CONFIG.md
+• QQ电话功能需在配置中启用 enable_qq_call
+• 输入 /tools 查看完整的工具列表
 """
                 await self._send_command_reply(message_type, sender_id, group_id, help_text)
 
@@ -3169,6 +3183,9 @@ class QQWeChatMessageListener:
             tool_context = {
                 "sender": None,  # 可以在这里传递QQ适配器实例
                 "send_image_callback": send_image_callback if sender_id else None,
+                "request_type": message_type,  # private 或 group
+                "user_id": int(sender_id) if sender_id else None,  # 发送者ID
+                "group_id": int(group_id) if group_id else None,  # 群ID
             }
             logger.info(f"[工具上下文] sender_id={sender_id}, message_type={message_type}, group_id={group_id}")
             logger.info(f"[工具上下文] send_image_callback={'已设置' if sender_id else '未设置'}")
@@ -3178,7 +3195,11 @@ class QQWeChatMessageListener:
 
             qq_service = get_service_info("QQ/微信集成")
             if qq_service:
-                tool_context["sender"] = qq_service.get("instance")
+                qq_agent = qq_service.get("instance")
+                if qq_agent and hasattr(qq_agent, 'qq_adapter'):
+                    tool_context["sender"] = qq_agent.qq_adapter
+                    tool_context["onebot_client"] = qq_agent.qq_adapter
+                    logger.info(f"[工具上下文] 已设置sender和onebot_client")
 
             # 天气相关
             if any(keyword in clean_message_for_tool for keyword in ["天气", "气温", "温度", "下雨", "晴天", "阴天"]):
@@ -3273,9 +3294,20 @@ class QQWeChatMessageListener:
 
             # B站相关
             elif any(keyword in clean_message_for_tool for keyword in ["B站", "b站", "哔哩哔哩", "bilibili"]):
+                # 检测是否是B站视频链接（直接调用 info_agent 处理）
+                import re
+                b站视频链接模式 = re.compile(r'(?:https?://)?(?:www\.|m\.)?bilibili\.com/video/(BV1[1-9A-HJ-NP-Za-km-z]{9}|av\d+)|(?:https?://)?b23\.tv/[A-Za-z0-9]+', re.IGNORECASE)
+                if b站视频链接模式.search(clean_message_for_tool):
+                    # 是B站视频链接，调用 info_agent
+                    for tool in available_tools:
+                        if tool.get("function", {}).get("name") == "agent.info_agent":
+                            matched_tool = "agent.info_agent"
+                            matched_params = {"prompt": clean_message_for_tool}
+                            logger.info(f"[B站视频链接] 检测到B站视频链接，调用info_agent: {clean_message_for_tool}")
+                            break
                 # 只有明确要求搜索、查询或推荐时才调用Undefined工具
                 # 如果是"打开"相关的，应该由MCP应用启动服务处理
-                if ("搜索" in clean_message_for_tool or "查找" in clean_message_for_tool or "查询" in clean_message_for_tool or "推荐" in clean_message_for_tool) and "打开" not in clean_message_for_tool:
+                elif ("搜索" in clean_message_for_tool or "查找" in clean_message_for_tool or "查询" in clean_message_for_tool or "推荐" in clean_message_for_tool) and "打开" not in clean_message_for_tool:
                     for tool in available_tools:
                         if tool.get("function", {}).get("name") == "tool.bilibili_search":
                             matched_tool = "tool.bilibili_search"
@@ -3416,23 +3448,38 @@ class QQWeChatMessageListener:
         try:
             from mcpserver.mcp_registry import get_service_info
 
+            # 获取群聊工具配置
+            enable_group_tools = self.qq_config.get("enable_group_tools", False)
+            group_disabled_tools = self.qq_config.get("group_disabled_tools", [])
+
             # 获取Undefined服务实例（使用displayName作为键）
             service_info = get_service_info("Undefined工具集")
             if not service_info:
                 logger.warning(f"[工具列表] Undefined服务未启用")
-                logger.warning(
-                    f"[工具列表] 可用服务列表: {list(__import__('mcpserver.mcp_registry', fromlist=['MCP_REGISTRY']).MCP_REGISTRY.keys())}"
-                )
-                return "Undefined工具集服务未启用"
+                # 尝试获取agent_undefined（备用）
+                service_info = get_service_info("agent_undefined")
+                if not service_info:
+                    logger.warning(
+                        f"[工具列表] 可用服务列表: {list(__import__('mcpserver.mcp_registry', fromlist=['MCP_REGISTRY']).MCP_REGISTRY.keys())}"
+                    )
+                    return "❌ Undefined工具集服务未启用\n\n💡 提示：\n• 请检查 config.json 中 qq.qq.enable_undefined_tools 是否为 true\n• 请确保 Undefined MCP Server 已正确初始化"
 
             undefined_agent = service_info.get("instance")
-            if not undefined_agent or not hasattr(undefined_agent, "get_available_tools"):
-                return "Undefined服务实例不存在"
+            if not undefined_agent:
+                return "❌ Undefined服务实例不存在\n\n💡 请检查Undefined MCP Server是否正确初始化"
 
-            # 获取可用工具列表
-            available_tools = undefined_agent.get_available_tools()
+            if not hasattr(undefined_agent, "get_available_tools"):
+                return "❌ Undefined服务缺少get_available_tools方法"
+
+            # 获取可用工具列表（同步方法）
+            try:
+                available_tools = undefined_agent.get_available_tools()
+            except Exception as e:
+                logger.error(f"[工具列表] 获取工具列表失败: {e}", exc_info=True)
+                return f"❌ 获取工具列表失败: {str(e)}"
+
             if not available_tools:
-                return "Undefined没有可用工具"
+                return "❌ Undefined没有可用工具\n\n💡 可能原因：\n• Undefined MCP Server 初始化失败\n• 工具注册表为空\n• 配置文件加载失败"
 
             # 按类别组织工具
             categories = {
@@ -3506,7 +3553,15 @@ class QQWeChatMessageListener:
                 category = category_map.get(tool_name, "⚙️ 工具类")
                 if category not in categories:
                     categories[category] = []  # 防止不存在的类别
-                categories[category].append({"name": tool_name, "desc": tool_desc})
+
+                # 检查是否为群聊禁用工具
+                is_group_disabled = tool_name in group_disabled_tools
+
+                categories[category].append({
+                    "name": tool_name,
+                    "desc": tool_desc,
+                    "group_disabled": is_group_disabled
+                })
 
             # 构建工具列表文本
             tools_text = f"🛠️ 弥娅工具箱（共 {len(available_tools)} 个工具）\n"
@@ -3517,17 +3572,35 @@ class QQWeChatMessageListener:
                     tools_text += f"{category}\n"
                     tools_text += f"{'-' * 30}\n"
                     for tool in tools:
-                        tools_text += f"  • {tool['name']}\n"
-                        # 只显示前40个字符的描述
-                        desc = tool["desc"][:40] + "..." if len(tool["desc"]) > 40 else tool["desc"]
+                        # 显示工具名称和描述
+                        desc = tool["desc"][:60] + "..." if len(tool["desc"]) > 60 else tool["desc"]
+
+                        # 标记群聊禁用工具
+                        group_disabled_mark = " [群聊禁用]" if tool["group_disabled"] else ""
+
+                        tools_text += f"  【{tool['name']}】{group_disabled_mark}\n"
                         tools_text += f"    {desc}\n"
                     tools_text += "\n"
 
             tools_text += f"{'=' * 35}\n"
             tools_text += "💡 使用技巧：\n"
             tools_text += "• 直接说出需求，无需记忆命令\n"
-            tools_text += '• 例如："今天上海的天气" 或 "搜索人工智能"\n'
-            tools_text += "• 输入 /help 查看完整使用指南\n"
+            tools_text += "• 例如：'今天上海的天气' 或 '搜索人工智能'\n"
+            tools_text += "• 支持自然语言调用，如：'查看这个视频 https://b23.tv/xxxx'\n"
+            tools_text += "• 输入 /help 查看完整使用指南\n\n"
+
+            # 添加群聊工具说明
+            if not enable_group_tools:
+                tools_text += "⚠️ 群聊工具说明：\n"
+                tools_text += "• 当前群聊工具未启用（配置: enable_group_tools=false）\n"
+                tools_text += "• 在群聊中只能通过关键词触发回复\n"
+                tools_text += "• 标记 [群聊禁用] 的工具在群聊中不可用\n"
+                tools_text += "• 如需在群聊中使用工具，请修改配置启用\n\n"
+
+            tools_text += "📌 调用方式：\n"
+            tools_text += "• 直接描述需求，AI会自动选择合适工具\n"
+            tools_text += "• 例如：'查B站搜索排行榜' 会自动调用 baiduhot 工具\n"
+            tools_text += "• 例如：'搜一下周杰伦' 会自动调用 web_search 工具\n"
 
             return tools_text
 

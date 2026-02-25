@@ -1,25 +1,24 @@
 import logging
 from datetime import datetime
-from string import Formatter
-from typing import Any, Optional, Literal
+from typing import Any, Optional
 
 from Undefined.config import Config
 from Undefined.context import RequestContext
 from Undefined.context_resource_registry import collect_context_resources
 from Undefined.render import render_html_to_image, render_markdown_to_html
+from Undefined.services.model_pool import ModelPoolService
 from Undefined.services.queue_manager import QueueManager
 from Undefined.utils.history import MessageHistoryManager
 from Undefined.utils.sender import MessageSender
 from Undefined.utils.scheduler import TaskScheduler
 from Undefined.services.security import SecurityService
+from Undefined.utils.recent_messages import get_recent_messages_prefer_local
 from Undefined.utils.resources import read_text_resource
 from Undefined.utils.xml import escape_xml_attr, escape_xml_text
 
 logger = logging.getLogger(__name__)
 
 
-_INFLIGHT_SUMMARY_SYSTEM_PROMPT_PATH = "res/prompts/inflight_summary_system.txt"
-_INFLIGHT_SUMMARY_USER_PROMPT_PATH = "res/prompts/inflight_summary_user.txt"
 _STATS_ANALYSIS_PROMPT_PATH = "res/prompts/stats_analysis.txt"
 _STATS_ANALYSIS_FALLBACK_PROMPT = (
     "你是一位专业的数据分析师。请根据以下 Token 使用统计数据提供分析：\n\n"
@@ -27,17 +26,6 @@ _STATS_ANALYSIS_FALLBACK_PROMPT = (
     "请从整体概况、趋势、模型效率、成本结构、异常点和优化建议进行总结，"
     "语言简洁，建议可执行。"
 )
-
-
-def _template_fields(template: str) -> list[str]:
-    fields: list[str] = []
-    try:
-        for _, field_name, _, _ in Formatter().parse(template):
-            if field_name:
-                fields.append(field_name)
-    except ValueError:
-        return []
-    return fields
 
 
 class AICoordinator:
@@ -64,6 +52,7 @@ class AICoordinator:
         self.scheduler = scheduler
         self.security = security
         self.command_dispatcher = command_dispatcher
+        self.model_pool = ModelPoolService(ai, config, sender)
 
     async def handle_auto_reply(
         self,
@@ -76,6 +65,7 @@ class AICoordinator:
         group_name: str = "未知群聊",
         sender_role: str = "member",
         sender_title: str = "",
+        trigger_message_id: int | None = None,
     ) -> None:
         """群聊自动回复入口：根据消息内容、命中情况和安全检测决定是否回复
 
@@ -148,6 +138,7 @@ class AICoordinator:
             "text": text,
             "full_question": full_question,
             "is_at_bot": is_at_bot,
+            "trigger_message_id": trigger_message_id,
         }
 
         if is_at_bot:
@@ -168,6 +159,7 @@ class AICoordinator:
         message_content: list[dict[str, Any]],
         is_poke: bool = False,
         sender_name: str = "未知用户",
+        trigger_message_id: int | None = None,
     ) -> None:
         """处理私聊消息入口，决定回复策略并进行安全检测"""
         logger.debug("[私聊回复] user=%s text_len=%s", user_id, len(text))
@@ -197,6 +189,7 @@ class AICoordinator:
             "sender_name": sender_name,
             "text": text,
             "full_question": full_question,
+            "trigger_message_id": trigger_message_id,
         }
         logger.debug(
             "[私聊回复] full_question_len=%s user=%s",
@@ -204,13 +197,19 @@ class AICoordinator:
             user_id,
         )
 
+        # 动态选择模型（私聊 group_id=0）
+        effective_config = self.model_pool.select_chat_config(
+            self.config.chat_model, user_id=user_id
+        )
+        request_data["selected_model_name"] = effective_config.model_name
+
         if user_id == self.config.superadmin_qq:
             await self.queue_manager.add_superadmin_request(
-                request_data, model_name=self.config.chat_model.model_name
+                request_data, model_name=effective_config.model_name
             )
         else:
             await self.queue_manager.add_private_request(
-                request_data, model_name=self.config.chat_model.model_name
+                request_data, model_name=effective_config.model_name
             )
 
     async def execute_reply(self, request: dict[str, Any]) -> None:
@@ -230,8 +229,6 @@ class AICoordinator:
             await self._execute_stats_analysis(request)
         elif req_type == "agent_intro_generation":
             await self._execute_agent_intro_generation(request)
-        elif req_type == "inflight_summary_generation":
-            await self._execute_inflight_summary_generation(request)
 
     async def _execute_auto_reply(self, request: dict[str, Any]) -> None:
         group_id = request["group_id"]
@@ -239,6 +236,7 @@ class AICoordinator:
         sender_name = str(request.get("sender_name") or "未知用户")
         group_name = str(request.get("group_name") or "未知群聊")
         full_question = request["full_question"]
+        trigger_message_id = request.get("trigger_message_id")
 
         # 创建请求上下文
         async with RequestContext(
@@ -254,7 +252,16 @@ class AICoordinator:
             async def get_recent_cb(
                 chat_id: str, msg_type: str, start: int, end: int
             ) -> list[dict[str, Any]]:
-                return self.history_manager.get_recent(chat_id, msg_type, start, end)
+                return await get_recent_messages_prefer_local(
+                    chat_id=chat_id,
+                    msg_type=msg_type,
+                    start=start,
+                    end=end,
+                    onebot_client=self.onebot,
+                    history_manager=self.history_manager,
+                    bot_qq=self.config.bot_qq,
+                    group_name_hint=group_name,
+                )
 
             async def send_private_cb(uid: int, msg: str) -> None:
                 await self.sender.send_private_message(uid, msg)
@@ -286,6 +293,8 @@ class AICoordinator:
             for key, value in resources.items():
                 if value is not None:
                     ctx.set_resource(key, value)
+            if trigger_message_id is not None:
+                ctx.set_resource("trigger_message_id", trigger_message_id)
             logger.debug(
                 "[上下文资源] group=%s keys=%s",
                 group_id,
@@ -322,6 +331,7 @@ class AICoordinator:
         user_id = request["user_id"]
         sender_name = str(request.get("sender_name") or "未知用户")
         full_question = request["full_question"]
+        trigger_message_id = request.get("trigger_message_id")
 
         # 创建请求上下文
         async with RequestContext(
@@ -336,7 +346,15 @@ class AICoordinator:
             async def get_recent_cb(
                 chat_id: str, msg_type: str, start: int, end: int
             ) -> list[dict[str, Any]]:
-                return self.history_manager.get_recent(chat_id, msg_type, start, end)
+                return await get_recent_messages_prefer_local(
+                    chat_id=chat_id,
+                    msg_type=msg_type,
+                    start=start,
+                    end=end,
+                    onebot_client=self.onebot,
+                    history_manager=self.history_manager,
+                    bot_qq=self.config.bot_qq,
+                )
 
             async def send_img_cb(tid: int, mtype: str, path: str) -> None:
                 await self._send_image(tid, mtype, path)
@@ -368,6 +386,8 @@ class AICoordinator:
             for key, value in resources.items():
                 if value is not None:
                     ctx.set_resource(key, value)
+            if trigger_message_id is not None:
+                ctx.set_resource("trigger_message_id", trigger_message_id)
             logger.debug(
                 "[上下文资源] private user=%s keys=%s",
                 user_id,
@@ -392,6 +412,7 @@ class AICoordinator:
                         "user_id": user_id,
                         "is_private_chat": True,
                         "sender_name": sender_name,
+                        "selected_model_name": request.get("selected_model_name"),
                     },
                 )
                 if result:
@@ -551,191 +572,6 @@ class AICoordinator:
                 agent_intro_generator.set_intro_generation_result(request_id, None)
             except Exception:
                 pass
-
-    async def _execute_inflight_summary_generation(
-        self, request: dict[str, Any]
-    ) -> None:
-        """异步生成进行中任务的简短摘要。"""
-        request_id = str(request.get("request_id") or "").strip()
-        source_message = str(request.get("source_message") or "").strip()
-        location_raw = request.get("location")
-
-        if not request_id:
-            logger.warning("[进行中摘要] 缺少 request_id")
-            return
-
-        if not source_message:
-            source_message = "(无文本内容)"
-
-        logger.debug(
-            "[进行中摘要] 开始生成: request_id=%s source_len=%s",
-            request_id,
-            len(source_message),
-        )
-
-        location_type: Literal["group", "private"] = "private"
-        location_name = "未知会话"
-        location_id = 0
-        if isinstance(location_raw, dict):
-            raw_type = str(location_raw.get("type") or "").strip().lower()
-            if raw_type in {"group", "private"}:
-                location_type = "group" if raw_type == "group" else "private"
-            raw_name = location_raw.get("name")
-            if isinstance(raw_name, str) and raw_name.strip():
-                location_name = raw_name.strip()
-            try:
-                location_id = int(location_raw.get("id", 0) or 0)
-            except (TypeError, ValueError):
-                location_id = 0
-
-        logger.debug(
-            "[进行中摘要] 上下文定位: request_id=%s type=%s name=%s id=%s",
-            request_id,
-            location_type,
-            location_name,
-            location_id,
-        )
-
-        system_prompt = (
-            "你是任务状态摘要器。"
-            "请输出一句极简中文短语（不超过20字），"
-            "用于描述该任务当前处理动作。"
-            "禁止解释、禁止换行、禁止时间承诺。"
-        )
-        user_prompt_template = (
-            "会话类型: {location_type}\n"
-            "会话名称: {location_name}\n"
-            "会话ID: {location_id}\n"
-            "正在处理消息: {source_message}\n"
-            "仅返回一个动作短语，例如：已开始生成首版"
-        )
-
-        try:
-            loaded_system_prompt = read_text_resource(
-                _INFLIGHT_SUMMARY_SYSTEM_PROMPT_PATH
-            ).strip()
-            if loaded_system_prompt:
-                system_prompt = loaded_system_prompt
-                logger.debug(
-                    "[进行中摘要] 使用系统提示词文件: path=%s len=%s",
-                    _INFLIGHT_SUMMARY_SYSTEM_PROMPT_PATH,
-                    len(system_prompt),
-                )
-        except Exception as exc:
-            logger.debug("[进行中摘要] 读取系统提示词失败，使用内置默认: %s", exc)
-
-        try:
-            loaded_user_prompt = read_text_resource(
-                _INFLIGHT_SUMMARY_USER_PROMPT_PATH
-            ).strip()
-            if loaded_user_prompt:
-                user_prompt_template = loaded_user_prompt
-                logger.debug(
-                    "[进行中摘要] 使用用户提示词文件: path=%s len=%s fields=%s",
-                    _INFLIGHT_SUMMARY_USER_PROMPT_PATH,
-                    len(user_prompt_template),
-                    _template_fields(user_prompt_template),
-                )
-        except Exception as exc:
-            logger.debug("[进行中摘要] 读取用户提示词失败，使用内置默认: %s", exc)
-
-        render_context: dict[str, Any] = {
-            "location_type": location_type,
-            "location_name": location_name,
-            "location_id": location_id,
-            "source_message": source_message,
-        }
-        template_fields = _template_fields(user_prompt_template)
-        missing_fields = [
-            field_name
-            for field_name in (
-                "location_type",
-                "location_name",
-                "location_id",
-                "source_message",
-            )
-            if field_name not in template_fields
-        ]
-        if missing_fields:
-            logger.warning(
-                "[进行中摘要] 用户提示词缺少占位符: missing=%s path=%s",
-                missing_fields,
-                _INFLIGHT_SUMMARY_USER_PROMPT_PATH,
-            )
-        try:
-            user_prompt = user_prompt_template.format(**render_context)
-            logger.debug(
-                "[进行中摘要] 模板渲染成功: request_id=%s fields=%s output_len=%s",
-                request_id,
-                template_fields,
-                len(user_prompt),
-            )
-        except Exception as exc:
-            logger.warning("[进行中摘要] 用户提示词模板格式异常，使用默认模板: %s", exc)
-            user_prompt = (
-                f"会话类型: {location_type}\n"
-                f"会话名称: {location_name}\n"
-                f"会话ID: {location_id}\n"
-                f"正在处理消息: {source_message}\n"
-                "仅返回一个动作短语，例如：已开始生成首版"
-            )
-
-        model_config = self.ai.get_inflight_summary_model_config()
-        logger.debug(
-            "[进行中摘要] 请求模型: request_id=%s model=%s max_tokens=%s",
-            request_id,
-            model_config.model_name,
-            model_config.max_tokens,
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
-        ]
-
-        action_summary = "处理中"
-        try:
-            result = await self.ai.request_model(
-                model_config=model_config,
-                messages=messages,
-                max_tokens=model_config.max_tokens,
-                call_type="inflight_summary_generation",
-            )
-            choices = result.get("choices", [{}])
-            if choices:
-                content = choices[0].get("message", {}).get("content", "")
-                cleaned = " ".join(str(content).split()).strip()
-                if cleaned:
-                    action_summary = cleaned
-                    logger.debug(
-                        "[进行中摘要] 模型返回动作: request_id=%s action_len=%s",
-                        request_id,
-                        len(action_summary),
-                    )
-        except Exception as exc:
-            logger.warning("[进行中摘要] 生成失败，使用默认状态: %s", exc)
-
-        updated = await self.ai.set_inflight_summary_generation_result(
-            request_id,
-            action_summary,
-        )
-        if updated:
-            logger.info(
-                "[进行中摘要] 更新完成: request_id=%s type=%s chat_id=%s",
-                request_id,
-                location_type,
-                location_id,
-            )
-        else:
-            logger.debug(
-                "[进行中摘要] 请求已结束或记录不存在，跳过更新: request_id=%s",
-                request_id,
-            )
 
     def _is_at_bot(self, content: list[dict[str, Any]]) -> bool:
         """检查消息内容中是否包含对机器人的 @ 提问"""

@@ -15,7 +15,6 @@ from Undefined.end_summary_storage import (
     EndSummaryRecord,
     MAX_END_SUMMARIES,
 )
-from Undefined.inflight_task_store import InflightTaskStore
 from Undefined.memory import MemoryStorage
 from Undefined.skills.anthropic_skills import AnthropicSkillRegistry
 from Undefined.utils.logging import log_debug_json
@@ -33,7 +32,6 @@ class PromptBuilder:
         bot_qq: int,
         memory_storage: MemoryStorage | None,
         end_summary_storage: EndSummaryStorage,
-        inflight_task_store: InflightTaskStore | None = None,
         system_prompt_path: str = "res/prompts/undefined.xml",
         runtime_config_getter: Callable[[], Any] | None = None,
         anthropic_skill_registry: AnthropicSkillRegistry | None = None,
@@ -50,7 +48,6 @@ class PromptBuilder:
         self._bot_qq = bot_qq
         self._memory_storage = memory_storage
         self._end_summary_storage = end_summary_storage
-        self._inflight_task_store = inflight_task_store
         self._system_prompt_path = system_prompt_path
         self._runtime_config_getter = runtime_config_getter
         self._anthropic_skill_registry = anthropic_skill_registry
@@ -91,6 +88,18 @@ class PromptBuilder:
             self._end_summaries.extend(loaded_summaries)
             self._summaries_loaded = True
             logger.debug(f"[AI初始化] 已加载 {len(loaded_summaries)} 条 End 摘要")
+
+    async def _load_each_rules(self) -> str:
+        path = "res/IMPORTANT/each.md"
+        try:
+            return read_text_resource(path)
+        except Exception:
+            pass
+        try:
+            async with aiofiles.open(path, "r", encoding="utf-8") as f:
+                return await f.read()
+        except Exception:
+            return ""
 
     async def _load_system_prompt(self) -> str:
         system_prompt_path = self._select_system_prompt_path()
@@ -253,8 +262,6 @@ class PromptBuilder:
                     logger, "[AI会话] 注入短期回忆", list(self._end_summaries)
                 )
 
-        await self._inject_inflight_tasks(messages, extra_context)
-
         if get_recent_messages_callback:
             await self._inject_recent_messages(
                 messages, get_recent_messages_callback, extra_context
@@ -267,6 +274,15 @@ class PromptBuilder:
                 "content": f"【当前时间】\n{current_time}\n\n注意：以上是当前的系统时间，供你参考。",
             }
         )
+
+        each_rules = await self._load_each_rules()
+        if each_rules:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"【强制规则 - 必须在进行任何操作前仔细阅读并严格遵守】\n{each_rules}",
+                }
+            )
 
         messages.append({"role": "user", "content": f"【当前消息】\n{question}"})
         logger.debug(
@@ -319,64 +335,6 @@ class PromptBuilder:
             return None
 
         return None
-
-    async def _inject_inflight_tasks(
-        self,
-        messages: list[dict[str, Any]],
-        extra_context: dict[str, Any] | None,
-    ) -> None:
-        if self._runtime_config_getter is not None:
-            try:
-                runtime_config = self._runtime_config_getter()
-                enabled = bool(
-                    getattr(runtime_config, "inflight_pre_register_enabled", True)
-                )
-                if not enabled:
-                    return
-            except Exception:
-                pass
-
-        if self._inflight_task_store is None:
-            return
-
-        scope = self._resolve_chat_scope(extra_context)
-        if scope is None:
-            return
-
-        request_type, chat_id = scope
-        ctx = RequestContext.current()
-        exclude_request_id = ctx.request_id if ctx else None
-        records = await self._inflight_task_store.list_for_chat(
-            request_type=request_type,
-            chat_id=chat_id,
-            exclude_request_id=exclude_request_id,
-        )
-        if not records:
-            return
-
-        logger.debug(
-            "[AI会话] 注入进行中任务: type=%s chat_id=%s count=%s exclude_request=%s",
-            request_type,
-            chat_id,
-            len(records),
-            exclude_request_id,
-        )
-
-        record_lines = [f"- {item['display_text']}" for item in records]
-        inflight_text = "\n".join(record_lines)
-        messages.append(
-            {
-                "role": "system",
-                "content": (
-                    "【进行中的任务】\n"
-                    f"{inflight_text}\n\n"
-                    "注意：以上任务已在其他并发请求中处理。"
-                    "若当前消息不包含明确的新参数或明确重做指令，"
-                    "严禁再次调用同类业务工具或 Agent，"
-                    "只做简短进度回应并结束本轮。"
-                ),
-            }
-        )
 
     async def _inject_recent_messages(
         self,

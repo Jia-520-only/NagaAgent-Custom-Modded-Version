@@ -10,12 +10,6 @@ from Undefined.config import load_webui_settings, get_config_manager, get_config
 from .core import BotProcessController, SessionStore
 from .routes import routes
 from .utils import ensure_config_toml
-from Undefined.utils.self_update import (
-    GitUpdatePolicy,
-    apply_git_update,
-    format_update_result,
-    restart_process,
-)
 
 # 初始化 WebUI 自身日志
 logging.basicConfig(
@@ -158,20 +152,8 @@ def create_app(*, redirect_to_config_once: bool = False) -> web.Application:
 def run() -> None:
     _init_webui_file_handler()
 
-    # Git-based auto update (only for official origin/main).
-    try:
-        update_result = apply_git_update(GitUpdatePolicy())
-        logger.info("[WebUI][自更新] %s", format_update_result(update_result))
-        if update_result.updated and update_result.repo_root is not None:
-            if update_result.uv_sync_attempted and not update_result.uv_synced:
-                logger.warning(
-                    "[WebUI][自更新] 代码已更新但 uv sync 失败，跳过自动重启（避免启动失败）"
-                )
-            else:
-                logger.warning("[WebUI][自更新] 检测到更新，正在重启 WebUI...")
-                restart_process(module="Undefined.webui", chdir=update_result.repo_root)
-    except Exception as exc:
-        logger.warning("[WebUI][自更新] 检查更新失败，将继续启动: %s", exc)
+    # 自动更新功能已移除（魔改版不需要远程更新）
+    # 如需更新代码，请手动运行 git pull 或下载新版本
 
     created = ensure_config_toml()
     settings = load_webui_settings()

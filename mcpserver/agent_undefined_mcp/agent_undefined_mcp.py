@@ -54,44 +54,40 @@ class UndefinedMCPAgent:
     
     def initialize_sync(self, config: Optional[Dict[str, Any]] = None):
         """同步初始化方法（用于兼容旧版调用）
-        
+
         Args:
             config: 配置字典（可选）
         """
-        try:
-            # 尝试获取当前运行的事件循环
-            loop = asyncio.get_running_loop()
-            # 如果有运行的事件循环，使用asyncio.create_task
-            import threading
-            result_container = [None]
-            exception_container = [None]
+        import threading
 
-            def run_in_thread():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    result_container[0] = new_loop.run_until_complete(self.initialize(config))
-                except Exception as e:
-                    exception_container[0] = e
-                finally:
-                    new_loop.close()
+        # 在独立线程中运行异步初始化，避免事件循环冲突
+        result_container = [None]
+        exception_container = [None]
+        ready_event = threading.Event()
 
-            thread = threading.Thread(target=run_in_thread, daemon=True)
-            thread.start()
-            thread.join(timeout=10)
-            
+        def run_in_thread():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                result_container[0] = new_loop.run_until_complete(self.initialize(config))
+                ready_event.set()
+            except Exception as e:
+                exception_container[0] = e
+                ready_event.set()
+            finally:
+                new_loop.close()
+
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
+
+        # 等待线程完成（最多30秒）
+        if ready_event.wait(timeout=30):
+            thread.join(timeout=5)
             if exception_container[0]:
                 raise exception_container[0]
             return result_container[0]
-        except RuntimeError:
-            # 没有运行的事件循环，创建新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result = loop.run_until_complete(self.initialize(config))
-            finally:
-                loop.close()
-            return result
+        else:
+            raise TimeoutError("Undefined MCP Agent 初始化超时")
     
     async def handle_handoff(self, task: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> str:
         """处理handoff调用
@@ -174,49 +170,44 @@ class UndefinedMCPAgent:
     
     def get_available_tools(self) -> List[Dict[str, Any]]:
         """获取可用的工具列表
-        
+
         Returns:
             List[Dict[str, Any]]: 工具列表
         """
-        if not self._initialized:
+        if not self._initialized or not self._server:
             return []
-        
-        try:
-            # 尝试获取当前运行的事件循环
-            loop = asyncio.get_running_loop()
-            # 如果有运行的事件循环,使用独立线程运行
-            import threading
-            result_container = [None]
-            exception_container = [None]
 
-            def run_in_thread():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    result_container[0] = new_loop.run_until_complete(self._server.get_available_tools())
-                except Exception as e:
-                    exception_container[0] = e
-                finally:
-                    new_loop.close()
+        import threading
 
-            thread = threading.Thread(target=run_in_thread, daemon=True)
-            thread.start()
-            thread.join(timeout=10)
+        # 在独立线程中运行，避免事件循环冲突
+        result_container = [None]
+        exception_container = [None]
+        ready_event = threading.Event()
 
-            if exception_container[0]:
-                raise exception_container[0]
-            return result_container[0] if result_container[0] else []
-        except RuntimeError:
-            # 没有运行的事件循环,创建新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        def run_in_thread():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
             try:
-                tools = loop.run_until_complete(self._server.get_available_tools())
-                return tools
+                result_container[0] = new_loop.run_until_complete(self._server.get_available_tools())
+                ready_event.set()
+            except Exception as e:
+                exception_container[0] = e
+                ready_event.set()
             finally:
-                loop.close()
-        except Exception as e:
-            sys.stderr.write(f"❌ 获取工具列表失败: {e}\n")
+                new_loop.close()
+
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
+
+        # 等待线程完成（最多10秒）
+        if ready_event.wait(timeout=10):
+            thread.join(timeout=5)
+            if exception_container[0]:
+                sys.stderr.write(f"❌ 获取工具列表失败: {exception_container[0]}\n")
+                return []
+            return result_container[0] if result_container[0] else []
+        else:
+            sys.stderr.write("❌ 获取工具列表超时\n")
             return []
     
     async def shutdown(self):

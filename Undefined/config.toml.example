@@ -29,20 +29,36 @@ context_recent_messages_limit = 20
 # en: Max retries for failed model API requests (0=no retry, default 2, max 5). Failed requests are re-queued with highest priority.
 ai_request_max_retries = 2
 
-# zh: 会话白名单（访问控制）。只要本段任一列表非空，系统将进入“限制模式”：未在白名单内的群/私聊会被忽略，且所有消息发送将被拦截。
-# en: Session allowlist (access control). If either the group or private allowlist is non-empty, the bot enters "allowlist mode": groups or private chats not in the allowlists will be ignored and outgoing messages will be blocked.
+# zh: 访问控制。mode 可选：off（不启用）/ blacklist（按黑名单）/ allowlist（按白名单）。
+# en: Access control. mode options: off (disabled) / blacklist / allowlist.
 [access]
+# zh: 访问控制模式：off / blacklist / allowlist。
+# en: Access control mode: off / blacklist / allowlist.
+mode = "off"
+
 # zh: 允许处理/发送的群号白名单（留空 = 不限制）。
 # en: Allowed group IDs. Empty = no restriction.
 allowed_group_ids = []
+
+# zh: 禁止处理/发送的群号黑名单（优先级高于 allowed_group_ids）。
+# en: Blocked group IDs. Higher priority than allowed_group_ids.
+blocked_group_ids = []
 
 # zh: 允许处理/发送的私聊 QQ 白名单（留空 = 不限制）。
 # en: Allowed private-chat user IDs. Empty = no restriction.
 allowed_private_ids = []
 
+# zh: 禁止处理/发送的私聊 QQ 黑名单（blacklist 模式生效）。
+# en: Blocked private-chat user IDs (effective in blacklist mode).
+blocked_private_ids = []
+
 # zh: 超级管理员是否可在私聊中绕过 "allowed_private_ids"（仅影响私聊收发；群聊仍严格按 "allowed_group_ids"）。
 # en: Allow superadmin to bypass "allowed_private_ids" for private chats only.
 superadmin_bypass_allowlist = true
+
+# zh: 超级管理员是否可在私聊中绕过 "blocked_private_ids"（仅影响私聊收发）。
+# en: Allow superadmin to bypass "blocked_private_ids" for private chats only.
+superadmin_bypass_private_blacklist = false
 
 # zh: OneBot WebSocket 配置。
 # en: OneBot WebSocket settings.
@@ -54,6 +70,7 @@ ws_url = "ws://127.0.0.1:3001"
 # en: Access token (optional).
 token = ""
 
+[models]
 # zh: 对话模型配置（主模型，处理每一条消息）。
 # en: Chat model config (the main model, processing each message).
 [models.chat]
@@ -84,6 +101,19 @@ thinking_include_budget = true
 # zh: 思维链工具调用兼容：启用后在多轮工具调用中回传 reasoning_content，避免部分模型返回 400。
 # en: Thinking tool-call compatibility: pass back reasoning_content in multi-turn tool calls to avoid 400 errors from some models.
 thinking_tool_call_compat = false
+
+# zh: 模型池配置（可选，支持多模型轮询/随机/用户指定）。
+# en: Model pool configuration (optional, supports round-robin/random/user-specified).
+[models.chat.pool]
+# zh: 是否启用模型池。
+# en: Enable model pool.
+enabled = false
+# zh: 分配策略：default（用户指定）/ round_robin（轮询）/ random（随机）。
+# en: Strategy: default (user-specified) / round_robin / random.
+strategy = "default"
+# zh: 模型池列表（每项需填 model_name、api_url、api_key，其余字段可选，缺省继承主模型）。
+# en: Model pool entries (model_name, api_url, api_key required; others optional, inherit from primary).
+models = []
 
 # zh: 视觉模型配置（用于图片描述和 OCR）。
 # en: Vision model config (image description and OCR).
@@ -178,38 +208,99 @@ thinking_include_budget = true
 # en: Thinking tool-call compatibility: pass back reasoning_content in multi-turn tool calls to avoid 400 errors from some models.
 thinking_tool_call_compat = false
 
-# zh: 进行中任务摘要模型配置（可选，用于并发真空期的"处理中摘要"）。仅当 [queue] 下 inflight_summary_enabled = true 时生效。
-# en: Inflight summary model config (optional, used to generate in-progress task summaries). Only effective when inflight_summary_enabled = true under [queue].
-# zh: 当 api_url/api_key/model_name 任一为空时，自动回退到 [models.chat]。
-# en: Falls back to [models.chat] when api_url/api_key/model_name is missing.
-[models.inflight_summary]
-# zh: OpenAI-compatible 基址 URL（可选，留空则回退 chat）。
-# en: OpenAI-compatible base URL (optional; empty means fallback to chat).
+# zh: Agent 模型池配置（可选，支持多模型轮询/随机/用户指定）。
+# en: Agent model pool configuration (optional, supports round-robin/random/user-specified).
+[models.agent.pool]
+# zh: 是否启用 Agent 模型池。
+# en: Enable agent model pool.
+enabled = false
+# zh: 分配策略：default（用户指定）/ round_robin（轮询）/ random（随机）。
+# en: Strategy: default (user-specified) / round_robin / random.
+strategy = "default"
+# zh: Agent 模型池列表（每项需填 model_name、api_url、api_key，其余字段可选，缺省继承主模型）。
+# en: Agent model pool entries (model_name, api_url, api_key required; others optional, inherit from primary).
+models = []
+
+# zh: 嵌入模型配置（知识库语义检索使用）。
+# en: Embedding model config (used by knowledge semantic retrieval).
+[models.embedding]
+# zh: OpenAI-compatible 基址 URL，例如 https://api.openai.com/v1。
+# en: OpenAI-compatible base URL, e.g. https://api.openai.com/v1.
 api_url = ""
-# zh: 模型 API Key（可选，留空则回退 chat）。
-# en: API key (optional; empty means fallback to chat).
+# zh: Embedding 模型 API Key。
+# en: Embedding model API key.
 api_key = ""
-# zh: 模型名称（可选，留空则回退 chat）。
-# en: Model name (optional; empty means fallback to chat).
+# zh: Embedding 模型名称。
+# en: Embedding model name.
 model_name = ""
-# zh: 最大生成 tokens（可选，默认 128）。
-# en: Max generation tokens (optional, default 128).
-max_tokens = 128
-# zh: 队列发车间隔（秒，可选，默认 1.5）。
-# en: Queue interval in seconds (optional, default 1.5).
-queue_interval_seconds = 1.5
-# zh: 是否启用 thinking（可选，默认 false）。
-# en: Enable thinking (optional, default false).
-thinking_enabled = false
-# zh: thinking 预算 tokens（可选，默认 0）。
-# en: Thinking budget tokens (optional, default 0).
-thinking_budget_tokens = 0
-# zh: 是否在请求中发送 budget_tokens（可选，默认 false）。
-# en: Include budget_tokens in request (optional, default false).
-thinking_include_budget = false
-# zh: 思维链工具调用兼容（可选，默认 false）。
-# en: Thinking tool-call compatibility (optional, default false).
-thinking_tool_call_compat = false
+# zh: 队列发车间隔（秒）。
+# en: Queue interval (seconds).
+queue_interval_seconds = 1.0
+# zh: 向量维度（可选）。0 或留空表示使用模型默认维度。
+# en: Embedding dimensions (optional). Use 0/empty to use model defaults.
+dimensions = 0
+# zh: 查询端指令前缀（可选，Qwen3/BGE 等模型常用）。
+# en: Query instruction prefix (optional, common for Qwen3/BGE-style models).
+query_instruction = ""
+# zh: 文档端指令前缀（可选，E5 等模型常用，例如 "passage: "）。
+# en: Document instruction prefix (optional, common for E5-style models, e.g. "passage: ").
+document_instruction = ""
+
+# zh: 重排模型配置（知识库二阶段检索使用）。
+# en: Rerank model config (used in second-stage knowledge retrieval).
+[models.rerank]
+# zh: OpenAI-compatible 基址 URL，例如 https://api.openai.com/v1。
+# en: OpenAI-compatible base URL, e.g. https://api.openai.com/v1.
+api_url = ""
+# zh: Rerank 模型 API Key。
+# en: Rerank model API key.
+api_key = ""
+# zh: Rerank 模型名称。
+# en: Rerank model name.
+model_name = ""
+# zh: 队列发车间隔（秒）。
+# en: Queue interval (seconds).
+queue_interval_seconds = 1.0
+# zh: 查询端指令前缀（可选，部分 rerank 模型需要，如 "Instruct: ...\\nQuery: "）。
+# en: Query instruction prefix (optional, required by some rerank models, e.g. "Instruct: ...\\nQuery: ").
+query_instruction = ""
+
+# zh: 本地知识库配置。
+# en: Local knowledge base settings.
+[knowledge]
+# zh: 是否启用本地知识库。
+# en: Enable local knowledge base.
+enabled = false
+# zh: 知识库根目录。
+# en: Knowledge base root directory.
+base_dir = "knowledge"
+# zh: 是否定期扫描文本变更。
+# en: Periodically scan text changes.
+auto_scan = false
+# zh: 是否自动执行嵌入。
+# en: Automatically run embedding.
+auto_embed = false
+# zh: 扫描间隔（秒）。
+# en: Scan interval (seconds).
+scan_interval = 60.0
+# zh: 每批嵌入块数。
+# en: Embedding batch size.
+embed_batch_size = 64
+# zh: 每个向量块包含的行数（滑动窗口大小）。
+# en: Number of lines per chunk (sliding window size).
+chunk_size = 10
+# zh: 相邻块重叠的行数。
+# en: Overlap lines between adjacent chunks.
+chunk_overlap = 2
+# zh: 语义搜索默认召回数。
+# en: Default semantic retrieval top-k.
+default_top_k = 5
+# zh: 是否启用语义检索后的重排。
+# en: Enable reranking after semantic retrieval.
+enable_rerank = false
+# zh: 重排后返回条数（必须小于 default_top_k）。
+# en: Number of results returned after rerank (must be less than default_top_k).
+rerank_top_k = 3
 
 # zh: 日志配置。
 # en: Logging settings.
@@ -266,21 +357,9 @@ description_preview_len = 160
 # en: - true: use `res/prompts/undefined_nagaagent.xml` and expose related agents
 # en: - false: use `res/prompts/undefined.xml` and hide/disable related agents
 nagaagent_mode_enabled = false
-# zh: 是否启用“进行中任务摘要”防重机制。
-# zh: 是否预注册进行中占位（防止重复执行）
-# zh: - true: 启用（默认），在首轮前预占位
-# zh: - false: 关闭，不预注册占位
-# en: Enable inflight task pre-registration (prevent duplicate execution)
-# en: - true: enable (default), pre-register before first round
-# en: - false: disable, no pre-registration
-inflight_pre_register_enabled = true
-# zh: 是否生成进行中任务摘要（需要额外摘要模型设置）
-# zh: - true: 启用，异步生成动作摘要
-# zh: - false: 关闭（默认），不生成摘要
-# en: Enable inflight task summary generation (additional summary model settings required)
-# en: - true: enable, generate action summary asynchronously
-# en: - false: disable (default), no summary generation
-inflight_summary_enabled = false
+# zh: 多模型池全局开关（关闭后所有多模型功能禁用，行为与原版一致）。无特殊需求不建议启用。
+# en: Global model pool switch. When disabled, all multi-model features are disabled. Not recommended unless you have specific needs.
+pool_enabled = false
 
 # zh: 彩蛋功能（可选）。
 # en: Easter egg features (optional)
@@ -291,6 +370,13 @@ agent_call_message_enabled = "none"
 # zh: 是否启用群聊关键词（“心理委员”）自动回复。
 # en: Enable keyword auto-replies("心理委员") in group chats.
 keyword_reply_enabled = false
+
+# zh: 历史记录配置。
+# en: History settings.
+[history]
+# zh: 每个会话最多保留的消息条数。
+# en: Max messages to keep per conversation.
+max_records = 10000
 
 # zh: Skills 热重载配置（可选）。
 # en: Skills hot reload settings (optional).
@@ -411,6 +497,9 @@ config_path = "config/mcp.json"
 # zh: messages.send_text_file 单文件文本发送大小上限（KB）。默认 512KB（0.5MB）。
 # en: Size limit for messages.send_text_file single-text-file uploads (KB). Default 512KB (0.5MB).
 send_text_file_max_size_kb = 512
+# zh: messages.send_url_file URL 文件发送大小上限（MB）。默认 100MB。
+# en: Size limit for messages.send_url_file URL-file uploads (MB). Default 100MB.
+send_url_file_max_size_mb = 100
 
 # zh: Bilibili 视频自动提取配置。
 # en: Bilibili video auto-extraction settings.

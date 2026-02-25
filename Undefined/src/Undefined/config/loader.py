@@ -30,9 +30,10 @@ except Exception:  # pragma: no cover
 from .models import (
     AgentModelConfig,
     ChatModelConfig,
-    InflightSummaryModelConfig,
-    LocalAIDrawConfig,
-    OnlineAIDrawConfig,
+    EmbeddingModelConfig,
+    ModelPool,
+    ModelPoolEntry,
+    RerankModelConfig,
     SecurityModelConfig,
     VisionModelConfig,
 )
@@ -351,11 +352,17 @@ class Config:
     bot_qq: int
     superadmin_qq: int
     admin_qqs: list[int]
-    # 访问控制（会话白名单）：任一列表非空即启用限制模式
+    # 访问控制模式：off / blacklist / allowlist
+    access_mode: str
+    # 访问控制（会话白名单 + 黑名单）
     allowed_group_ids: list[int]
+    blocked_group_ids: list[int]
     allowed_private_ids: list[int]
+    blocked_private_ids: list[int]
     # 是否允许超级管理员在私聊中绕过 allowed_private_ids（仅私聊收发）
     superadmin_bypass_allowlist: bool
+    # 是否允许超级管理员在私聊中绕过 blocked_private_ids（仅私聊收发）
+    superadmin_bypass_private_blacklist: bool
     forward_proxy_qq: int | None
     process_every_message: bool
     process_private_message: bool
@@ -364,8 +371,6 @@ class Config:
     context_recent_messages_limit: int
     ai_request_max_retries: int
     nagaagent_mode_enabled: bool
-    inflight_pre_register_enabled: bool
-    inflight_summary_enabled: bool
     onebot_ws_url: str
     onebot_token: str
     chat_model: ChatModelConfig
@@ -373,7 +378,7 @@ class Config:
     security_model_enabled: bool
     security_model: SecurityModelConfig
     agent_model: AgentModelConfig
-    inflight_summary_model: InflightSummaryModelConfig
+    model_pool_enabled: bool
     log_level: str
     log_file_path: str
     log_max_size: int
@@ -390,6 +395,7 @@ class Config:
     token_usage_max_archives: int
     token_usage_max_total_mb: int
     token_usage_archive_prune_mode: str
+    history_max_records: int
     skills_hot_reload: bool
     skills_hot_reload_interval: float
     skills_hot_reload_debounce: float
@@ -434,6 +440,22 @@ class Config:
     code_delivery_command_blacklist: list[str]
     # messages 工具集
     messages_send_text_file_max_size_kb: int
+    messages_send_url_file_max_size_mb: int
+    # 嵌入模型
+    embedding_model: EmbeddingModelConfig
+    rerank_model: RerankModelConfig
+    # 知识库
+    knowledge_enabled: bool
+    knowledge_base_dir: str
+    knowledge_auto_scan: bool
+    knowledge_auto_embed: bool
+    knowledge_scan_interval: float
+    knowledge_embed_batch_size: int
+    knowledge_chunk_size: int
+    knowledge_chunk_overlap: int
+    knowledge_default_top_k: int
+    knowledge_enable_rerank: bool
+    knowledge_rerank_top_k: int
     # Bilibili 视频提取
     bilibili_auto_extract_enabled: bool
     bilibili_cookie: str
@@ -443,15 +465,22 @@ class Config:
     bilibili_oversize_strategy: str
     bilibili_auto_extract_group_ids: list[int]
     bilibili_auto_extract_private_ids: list[int]
-    # AI绘图配置
-    online_ai_draw: OnlineAIDrawConfig
-    local_ai_draw: LocalAIDrawConfig
     _allowed_group_ids_set: set[int] = dataclass_field(
         default_factory=set,
         init=False,
         repr=False,
     )
+    _blocked_group_ids_set: set[int] = dataclass_field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
     _allowed_private_ids_set: set[int] = dataclass_field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
+    _blocked_private_ids_set: set[int] = dataclass_field(
         default_factory=set,
         init=False,
         repr=False,
@@ -468,9 +497,15 @@ class Config:
     )
 
     def __post_init__(self) -> None:
-        # 访问控制白名单属于高频热路径，启动后缓存为 set 降低重复构建开销。
+        # 访问控制属于高频热路径，启动后缓存为 set 降低重复构建开销。
+        normalized_mode = str(self.access_mode).strip().lower()
+        if normalized_mode not in {"off", "blacklist", "allowlist", "legacy"}:
+            normalized_mode = "off"
+        self.access_mode = normalized_mode
         self._allowed_group_ids_set = {int(item) for item in self.allowed_group_ids}
+        self._blocked_group_ids_set = {int(item) for item in self.blocked_group_ids}
         self._allowed_private_ids_set = {int(item) for item in self.allowed_private_ids}
+        self._blocked_private_ids_set = {int(item) for item in self.blocked_private_ids}
         self._bilibili_group_ids_set = {
             int(item) for item in self.bilibili_auto_extract_group_ids
         }
@@ -565,29 +600,87 @@ class Config:
             ),
             False,
         )
-        inflight_pre_register_enabled = _coerce_bool(
-            _get_value(
-                data,
-                ("features", "inflight_pre_register_enabled"),
-                "INFLIGHT_PRE_REGISTER_ENABLED",
-            ),
-            True,
-        )
-        inflight_summary_enabled = _coerce_bool(
-            _get_value(
-                data,
-                ("features", "inflight_summary_enabled"),
-                "INFLIGHT_SUMMARY_ENABLED",
-            ),
-            False,
-        )
-
         onebot_ws_url = _coerce_str(
             _get_value(data, ("onebot", "ws_url"), "ONEBOT_WS_URL"), ""
         )
         onebot_token = _coerce_str(
             _get_value(data, ("onebot", "token"), "ONEBOT_TOKEN"), ""
         )
+
+        embedding_model = cls._parse_embedding_model_config(data)
+        rerank_model = cls._parse_rerank_model_config(data)
+
+        knowledge_enabled = _coerce_bool(
+            _get_value(data, ("knowledge", "enabled"), None), False
+        )
+        knowledge_base_dir = _coerce_str(
+            _get_value(data, ("knowledge", "base_dir"), None), "knowledge"
+        )
+        knowledge_auto_scan = _coerce_bool(
+            _get_value(data, ("knowledge", "auto_scan"), None), False
+        )
+        knowledge_auto_embed = _coerce_bool(
+            _get_value(data, ("knowledge", "auto_embed"), None), False
+        )
+        knowledge_scan_interval = _coerce_float(
+            _get_value(data, ("knowledge", "scan_interval"), None), 60.0
+        )
+        if knowledge_scan_interval <= 0:
+            knowledge_scan_interval = 60.0
+        knowledge_embed_batch_size = _coerce_int(
+            _get_value(data, ("knowledge", "embed_batch_size"), None), 64
+        )
+        if knowledge_embed_batch_size <= 0:
+            knowledge_embed_batch_size = 64
+        knowledge_chunk_size = _coerce_int(
+            _get_value(data, ("knowledge", "chunk_size"), None), 10
+        )
+        if knowledge_chunk_size <= 0:
+            knowledge_chunk_size = 10
+        knowledge_chunk_overlap = _coerce_int(
+            _get_value(data, ("knowledge", "chunk_overlap"), None), 2
+        )
+        if knowledge_chunk_overlap < 0:
+            knowledge_chunk_overlap = 0
+        knowledge_default_top_k = _coerce_int(
+            _get_value(data, ("knowledge", "default_top_k"), None), 5
+        )
+        if knowledge_default_top_k <= 0:
+            knowledge_default_top_k = 5
+        knowledge_enable_rerank = _coerce_bool(
+            _get_value(data, ("knowledge", "enable_rerank"), None), False
+        )
+        knowledge_rerank_top_k = _coerce_int(
+            _get_value(data, ("knowledge", "rerank_top_k"), None), 3
+        )
+        if knowledge_rerank_top_k <= 0:
+            knowledge_rerank_top_k = 3
+        if knowledge_default_top_k <= 1 and knowledge_enable_rerank:
+            logger.warning(
+                "[配置] knowledge.default_top_k=%s，无法满足 rerank_top_k < default_top_k，"
+                "已自动禁用重排",
+                knowledge_default_top_k,
+            )
+            knowledge_enable_rerank = False
+        if knowledge_rerank_top_k >= knowledge_default_top_k:
+            fallback = knowledge_default_top_k - 1
+            if fallback <= 0:
+                fallback = 1
+                knowledge_enable_rerank = False
+                logger.warning(
+                    "[配置] knowledge.rerank_top_k 需小于 knowledge.default_top_k，"
+                    "且当前 default_top_k=%s 无法满足约束，已自动禁用重排",
+                    knowledge_default_top_k,
+                )
+            else:
+                logger.warning(
+                    "[配置] knowledge.rerank_top_k 需小于 knowledge.default_top_k，"
+                    "已回退: rerank_top_k=%s -> %s (default_top_k=%s)",
+                    knowledge_rerank_top_k,
+                    fallback,
+                    knowledge_default_top_k,
+                )
+            knowledge_rerank_top_k = fallback
 
         chat_model = cls._parse_chat_model_config(data)
         vision_model = cls._parse_vision_model_config(data)
@@ -601,19 +694,27 @@ class Config:
         )
         security_model = cls._parse_security_model_config(data, chat_model)
         agent_model = cls._parse_agent_model_config(data)
-        inflight_summary_model = cls._parse_inflight_summary_model_config(
-            data, chat_model
+
+        model_pool_enabled = _coerce_bool(
+            _get_value(data, ("features", "pool_enabled"), "MODEL_POOL_ENABLED"), False
         )
 
         superadmin_qq, admin_qqs = cls._merge_admins(
             superadmin_qq=superadmin_qq, admin_qqs=admin_qqs
         )
 
+        access_mode_raw = _get_value(data, ("access", "mode"), "ACCESS_MODE")
         allowed_group_ids = _coerce_int_list(
             _get_value(data, ("access", "allowed_group_ids"), "ALLOWED_GROUP_IDS")
         )
+        blocked_group_ids = _coerce_int_list(
+            _get_value(data, ("access", "blocked_group_ids"), "BLOCKED_GROUP_IDS")
+        )
         allowed_private_ids = _coerce_int_list(
             _get_value(data, ("access", "allowed_private_ids"), "ALLOWED_PRIVATE_IDS")
+        )
+        blocked_private_ids = _coerce_int_list(
+            _get_value(data, ("access", "blocked_private_ids"), "BLOCKED_PRIVATE_IDS")
         )
         superadmin_bypass_allowlist = _coerce_bool(
             _get_value(
@@ -623,6 +724,36 @@ class Config:
             ),
             True,
         )
+        superadmin_bypass_private_blacklist = _coerce_bool(
+            _get_value(
+                data,
+                ("access", "superadmin_bypass_private_blacklist"),
+                "SUPERADMIN_BYPASS_PRIVATE_BLACKLIST",
+            ),
+            False,
+        )
+        if access_mode_raw is None:
+            # 兼容旧配置：未配置 mode 时沿用历史行为（群黑名单 + 白名单联动）。
+            if (
+                allowed_group_ids
+                or blocked_group_ids
+                or allowed_private_ids
+                or blocked_private_ids
+            ):
+                access_mode = "legacy"
+                logger.warning(
+                    "[配置] access.mode 未设置，已启用兼容模式（legacy）。建议显式设置为 off/blacklist/allowlist。"
+                )
+            else:
+                access_mode = "off"
+        else:
+            access_mode = _coerce_str(access_mode_raw, "off").lower()
+            if access_mode not in {"off", "blacklist", "allowlist"}:
+                logger.warning(
+                    "[配置] access.mode 非法（仅支持 off/blacklist/allowlist），已回退为 off: %s",
+                    access_mode,
+                )
+                access_mode = "off"
 
         log_level = _coerce_str(
             _get_value(data, ("logging", "level"), "LOG_LEVEL"), "INFO"
@@ -727,6 +858,10 @@ class Config:
                 "TOKEN_USAGE_ARCHIVE_PRUNE_MODE",
             ),
             "delete",
+        )
+
+        history_max_records = _coerce_int(
+            _get_value(data, ("history", "max_records"), "HISTORY_MAX_RECORDS"), 10000
         )
 
         skills_hot_reload = _coerce_bool(
@@ -913,30 +1048,6 @@ class Config:
             _get_value(data, ("bilibili", "auto_extract_private_ids"), None)
         )
 
-        # AI绘图配置
-        online_ai_draw = OnlineAIDrawConfig(
-            api_url=_coerce_str(_get_value(data, ("online_ai_draw", "api_url"), None),
-                                 "https://open.bigmodel.cn/api/paas/v4"),
-            api_key=_coerce_str(_get_value(data, ("online_ai_draw", "api_key"), None), ""),
-            default_model=_coerce_str(_get_value(data, ("online_ai_draw", "default_model"), None), "cogview-3"),
-            default_size=_coerce_str(_get_value(data, ("online_ai_draw", "default_size"), None), "1:1"),
-            provider=_coerce_str(_get_value(data, ("online_ai_draw", "provider"), None), "zhipu"),
-            timeout=_coerce_int(_get_value(data, ("online_ai_draw", "timeout"), None), 120)
-        )
-
-        local_ai_draw = LocalAIDrawConfig(
-            service_url=_coerce_str(_get_value(data, ("local_ai_draw", "service_url"), None),
-                                   "http://127.0.0.1:7860"),
-            service_type=_coerce_str(_get_value(data, ("local_ai_draw", "service_type"), None), "sd_webui"),
-            model=_coerce_str(_get_value(data, ("local_ai_draw", "model"), None), ""),
-            width=_coerce_int(_get_value(data, ("local_ai_draw", "width"), None), 512),
-            height=_coerce_int(_get_value(data, ("local_ai_draw", "height"), None), 512),
-            steps=_coerce_int(_get_value(data, ("local_ai_draw", "steps"), None), 20),
-            cfg_scale=_coerce_float(_get_value(data, ("local_ai_draw", "cfg_scale"), None), 7.0),
-            sampler=_coerce_str(_get_value(data, ("local_ai_draw", "sampler"), None), "DPM++ 2M Karras"),
-            timeout=_coerce_int(_get_value(data, ("local_ai_draw", "timeout"), None), 300)
-        )
-
         # Code Delivery Agent 配置
         code_delivery_enabled = _coerce_bool(
             _get_value(data, ("code_delivery", "enabled"), None), True
@@ -1020,6 +1131,17 @@ class Config:
         if messages_send_text_file_max_size_kb <= 0:
             messages_send_text_file_max_size_kb = 512
 
+        messages_send_url_file_max_size_mb = _coerce_int(
+            _get_value(
+                data,
+                ("messages", "send_url_file_max_size_mb"),
+                "MESSAGES_SEND_URL_FILE_MAX_SIZE_MB",
+            ),
+            100,
+        )
+        if messages_send_url_file_max_size_mb <= 0:
+            messages_send_url_file_max_size_mb = 100
+
         webui_settings = load_webui_settings(config_path)
 
         if strict:
@@ -1030,6 +1152,8 @@ class Config:
                 chat_model=chat_model,
                 vision_model=vision_model,
                 agent_model=agent_model,
+                knowledge_enabled=knowledge_enabled,
+                embedding_model=embedding_model,
             )
 
         cls._log_debug_info(
@@ -1037,16 +1161,19 @@ class Config:
             vision_model,
             security_model,
             agent_model,
-            inflight_summary_model,
         )
 
         return cls(
             bot_qq=bot_qq,
             superadmin_qq=superadmin_qq,
             admin_qqs=admin_qqs,
+            access_mode=access_mode,
             allowed_group_ids=allowed_group_ids,
+            blocked_group_ids=blocked_group_ids,
             allowed_private_ids=allowed_private_ids,
+            blocked_private_ids=blocked_private_ids,
             superadmin_bypass_allowlist=superadmin_bypass_allowlist,
+            superadmin_bypass_private_blacklist=superadmin_bypass_private_blacklist,
             forward_proxy_qq=forward_proxy_qq,
             process_every_message=process_every_message,
             process_private_message=process_private_message,
@@ -1055,8 +1182,6 @@ class Config:
             context_recent_messages_limit=context_recent_messages_limit,
             ai_request_max_retries=ai_request_max_retries,
             nagaagent_mode_enabled=nagaagent_mode_enabled,
-            inflight_pre_register_enabled=inflight_pre_register_enabled,
-            inflight_summary_enabled=inflight_summary_enabled,
             onebot_ws_url=onebot_ws_url,
             onebot_token=onebot_token,
             chat_model=chat_model,
@@ -1064,7 +1189,7 @@ class Config:
             security_model_enabled=security_model_enabled,
             security_model=security_model,
             agent_model=agent_model,
-            inflight_summary_model=inflight_summary_model,
+            model_pool_enabled=model_pool_enabled,
             log_level=log_level,
             log_file_path=log_file_path,
             log_max_size=log_max_size_mb * 1024 * 1024,
@@ -1082,6 +1207,7 @@ class Config:
             token_usage_max_total_mb=token_usage_max_total_mb,
             token_usage_archive_prune_mode=token_usage_archive_prune_mode,
             skills_hot_reload=skills_hot_reload,
+            history_max_records=history_max_records,
             skills_hot_reload_interval=skills_hot_reload_interval,
             skills_hot_reload_debounce=skills_hot_reload_debounce,
             agent_intro_autogen_enabled=agent_intro_autogen_enabled,
@@ -1123,6 +1249,7 @@ class Config:
             code_delivery_container_cpu_limit=code_delivery_container_cpu_limit,
             code_delivery_command_blacklist=code_delivery_command_blacklist,
             messages_send_text_file_max_size_kb=messages_send_text_file_max_size_kb,
+            messages_send_url_file_max_size_mb=messages_send_url_file_max_size_mb,
             bilibili_auto_extract_enabled=bilibili_auto_extract_enabled,
             bilibili_cookie=bilibili_cookie,
             bilibili_prefer_quality=bilibili_prefer_quality,
@@ -1131,8 +1258,19 @@ class Config:
             bilibili_oversize_strategy=bilibili_oversize_strategy,
             bilibili_auto_extract_group_ids=bilibili_auto_extract_group_ids,
             bilibili_auto_extract_private_ids=bilibili_auto_extract_private_ids,
-            online_ai_draw=online_ai_draw,
-            local_ai_draw=local_ai_draw,
+            embedding_model=embedding_model,
+            rerank_model=rerank_model,
+            knowledge_enabled=knowledge_enabled,
+            knowledge_base_dir=knowledge_base_dir,
+            knowledge_auto_scan=knowledge_auto_scan,
+            knowledge_auto_embed=knowledge_auto_embed,
+            knowledge_scan_interval=knowledge_scan_interval,
+            knowledge_embed_batch_size=knowledge_embed_batch_size,
+            knowledge_chunk_size=knowledge_chunk_size,
+            knowledge_chunk_overlap=knowledge_chunk_overlap,
+            knowledge_default_top_k=knowledge_default_top_k,
+            knowledge_enable_rerank=knowledge_enable_rerank,
+            knowledge_rerank_top_k=knowledge_rerank_top_k,
         )
 
     @property
@@ -1140,46 +1278,135 @@ class Config:
         """兼容旧字段名，等价于 bilibili_cookie。"""
         return self.bilibili_cookie
 
-    def access_control_enabled(self) -> bool:
-        """是否启用会话白名单限制。
+    def allowlist_mode_enabled(self) -> bool:
+        """是否启用白名单限制模式。"""
 
-        规则：allowed_group_ids 或 allowed_private_ids 任一非空即启用。
+        return self.access_mode in {"allowlist", "legacy"} and (
+            bool(self.allowed_group_ids) or bool(self.allowed_private_ids)
+        )
+
+    def group_allowlist_enabled(self) -> bool:
+        """群聊白名单是否生效（显式 allowlist 模式按维度独立控制）。"""
+
+        return bool(self.allowed_group_ids)
+
+    def private_allowlist_enabled(self) -> bool:
+        """私聊白名单是否生效（显式 allowlist 模式按维度独立控制）。"""
+
+        return bool(self.allowed_private_ids)
+
+    def blacklist_mode_enabled(self) -> bool:
+        """是否启用黑名单限制模式。"""
+
+        return self.access_mode in {"blacklist", "legacy"} and (
+            bool(self.blocked_group_ids) or bool(self.blocked_private_ids)
+        )
+
+    def access_control_enabled(self) -> bool:
+        """是否启用访问控制。"""
+
+        return self.allowlist_mode_enabled() or self.blacklist_mode_enabled()
+
+    def group_access_denied_reason(self, group_id: int) -> str | None:
+        """群聊访问被拒绝原因。
+
+        返回:
+            - "blacklist": 命中 access.blocked_group_ids
+            - "allowlist": allowlist 模式下不在 access.allowed_group_ids
+            - None: 允许访问
         """
 
-        return bool(self.allowed_group_ids) or bool(self.allowed_private_ids)
+        normalized_group_id = int(group_id)
+        if self.access_mode == "off":
+            return None
+        if self.access_mode == "blacklist":
+            if normalized_group_id in self._blocked_group_ids_set:
+                return "blacklist"
+            return None
+        if self.access_mode == "legacy":
+            if normalized_group_id in self._blocked_group_ids_set:
+                return "blacklist"
+            if not self.allowlist_mode_enabled():
+                return None
+            if normalized_group_id not in self._allowed_group_ids_set:
+                return "allowlist"
+            return None
+        if not self.group_allowlist_enabled():
+            return None
+        if normalized_group_id not in self._allowed_group_ids_set:
+            return "allowlist"
+        return None
 
     def is_group_allowed(self, group_id: int) -> bool:
         """群聊是否允许收发消息。"""
 
-        if not self.access_control_enabled():
-            return True
-        return int(group_id) in self._allowed_group_ids_set
+        return self.group_access_denied_reason(group_id) is None
+
+    def private_access_denied_reason(self, user_id: int) -> str | None:
+        """私聊访问被拒绝原因。"""
+
+        normalized_user_id = int(user_id)
+        if self.access_mode == "off":
+            return None
+        if self.access_mode == "blacklist":
+            if normalized_user_id not in self._blocked_private_ids_set:
+                return None
+            if (
+                self.superadmin_bypass_private_blacklist
+                and normalized_user_id == int(self.superadmin_qq)
+                and self.superadmin_qq > 0
+            ):
+                return None
+            return "blacklist"
+        if self.access_mode == "legacy":
+            if normalized_user_id in self._blocked_private_ids_set:
+                if (
+                    self.superadmin_bypass_private_blacklist
+                    and normalized_user_id == int(self.superadmin_qq)
+                    and self.superadmin_qq > 0
+                ):
+                    return None
+                return "blacklist"
+            if not self.allowlist_mode_enabled():
+                return None
+            if (
+                self.superadmin_bypass_allowlist
+                and normalized_user_id == int(self.superadmin_qq)
+                and self.superadmin_qq > 0
+            ):
+                return None
+            if normalized_user_id not in self._allowed_private_ids_set:
+                return "allowlist"
+            return None
+        if not self.private_allowlist_enabled():
+            return None
+        if (
+            self.superadmin_bypass_allowlist
+            and normalized_user_id == int(self.superadmin_qq)
+            and self.superadmin_qq > 0
+        ):
+            return None
+        if normalized_user_id not in self._allowed_private_ids_set:
+            return "allowlist"
+        return None
 
     def is_private_allowed(self, user_id: int) -> bool:
         """私聊是否允许收发消息。"""
 
-        if not self.access_control_enabled():
-            return True
-        if (
-            self.superadmin_bypass_allowlist
-            and int(user_id) == int(self.superadmin_qq)
-            and self.superadmin_qq > 0
-        ):
-            return True
-        return int(user_id) in self._allowed_private_ids_set
+        return self.private_access_denied_reason(user_id) is None
 
     def is_bilibili_auto_extract_allowed_group(self, group_id: int) -> bool:
         """群聊是否允许 bilibili 自动提取。"""
         if self._bilibili_group_ids_set:
             return int(group_id) in self._bilibili_group_ids_set
-        # 白名单为空时跟随全局 access 控制
+        # 功能白名单为空时跟随全局 access 控制
         return self.is_group_allowed(group_id)
 
     def is_bilibili_auto_extract_allowed_private(self, user_id: int) -> bool:
         """私聊是否允许 bilibili 自动提取。"""
         if self._bilibili_private_ids_set:
             return int(user_id) in self._bilibili_private_ids_set
-        # 白名单为空时跟随全局 access 控制
+        # 功能白名单为空时跟随全局 access 控制
         return self.is_private_allowed(user_id)
 
     def should_process_group_message(self, is_at_bot: bool) -> bool:
@@ -1215,6 +1442,138 @@ class Config:
         return bool(self.security_model_enabled)
 
     @staticmethod
+    def _parse_model_pool(
+        data: dict[str, Any],
+        model_section: str,
+        primary_config: ChatModelConfig | AgentModelConfig,
+    ) -> ModelPool | None:
+        """解析模型池配置，缺省字段继承 primary_config"""
+        pool_data = data.get("models", {}).get(model_section, {}).get("pool")
+        if not isinstance(pool_data, dict):
+            return None
+
+        enabled = _coerce_bool(pool_data.get("enabled"), False)
+        strategy = _coerce_str(pool_data.get("strategy"), "default").strip().lower()
+        if strategy not in ("default", "round_robin", "random"):
+            strategy = "default"
+
+        raw_models = pool_data.get("models")
+        if not isinstance(raw_models, list):
+            return ModelPool(enabled=enabled, strategy=strategy)
+
+        entries: list[ModelPoolEntry] = []
+        for item in raw_models:
+            if not isinstance(item, dict):
+                continue
+            name = _coerce_str(item.get("model_name"), "").strip()
+            if not name:
+                continue
+            entries.append(
+                ModelPoolEntry(
+                    api_url=_coerce_str(item.get("api_url"), primary_config.api_url),
+                    api_key=_coerce_str(item.get("api_key"), primary_config.api_key),
+                    model_name=name,
+                    max_tokens=_coerce_int(
+                        item.get("max_tokens"), primary_config.max_tokens
+                    ),
+                    queue_interval_seconds=_coerce_float(
+                        item.get("queue_interval_seconds"),
+                        primary_config.queue_interval_seconds,
+                    ),
+                    thinking_enabled=_coerce_bool(
+                        item.get("thinking_enabled"), primary_config.thinking_enabled
+                    ),
+                    thinking_budget_tokens=_coerce_int(
+                        item.get("thinking_budget_tokens"),
+                        primary_config.thinking_budget_tokens,
+                    ),
+                    thinking_include_budget=_coerce_bool(
+                        item.get("thinking_include_budget"),
+                        primary_config.thinking_include_budget,
+                    ),
+                    thinking_tool_call_compat=_coerce_bool(
+                        item.get("thinking_tool_call_compat"),
+                        primary_config.thinking_tool_call_compat,
+                    ),
+                )
+            )
+
+        return ModelPool(enabled=enabled, strategy=strategy, models=entries)
+
+    @staticmethod
+    def _parse_embedding_model_config(data: dict[str, Any]) -> EmbeddingModelConfig:
+        return EmbeddingModelConfig(
+            api_url=_coerce_str(
+                _get_value(
+                    data, ("models", "embedding", "api_url"), "EMBEDDING_MODEL_API_URL"
+                ),
+                "",
+            ),
+            api_key=_coerce_str(
+                _get_value(
+                    data, ("models", "embedding", "api_key"), "EMBEDDING_MODEL_API_KEY"
+                ),
+                "",
+            ),
+            model_name=_coerce_str(
+                _get_value(
+                    data, ("models", "embedding", "model_name"), "EMBEDDING_MODEL_NAME"
+                ),
+                "",
+            ),
+            queue_interval_seconds=_coerce_float(
+                _get_value(
+                    data, ("models", "embedding", "queue_interval_seconds"), None
+                ),
+                1.0,
+            ),
+            dimensions=_coerce_int(
+                _get_value(data, ("models", "embedding", "dimensions"), None), 0
+            )
+            or None,
+            query_instruction=_coerce_str(
+                _get_value(data, ("models", "embedding", "query_instruction"), None), ""
+            ),
+            document_instruction=_coerce_str(
+                _get_value(data, ("models", "embedding", "document_instruction"), None),
+                "",
+            ),
+        )
+
+    @staticmethod
+    def _parse_rerank_model_config(data: dict[str, Any]) -> RerankModelConfig:
+        queue_interval_seconds = _coerce_float(
+            _get_value(data, ("models", "rerank", "queue_interval_seconds"), None),
+            1.0,
+        )
+        if queue_interval_seconds <= 0:
+            queue_interval_seconds = 1.0
+        return RerankModelConfig(
+            api_url=_coerce_str(
+                _get_value(
+                    data, ("models", "rerank", "api_url"), "RERANK_MODEL_API_URL"
+                ),
+                "",
+            ),
+            api_key=_coerce_str(
+                _get_value(
+                    data, ("models", "rerank", "api_key"), "RERANK_MODEL_API_KEY"
+                ),
+                "",
+            ),
+            model_name=_coerce_str(
+                _get_value(
+                    data, ("models", "rerank", "model_name"), "RERANK_MODEL_NAME"
+                ),
+                "",
+            ),
+            queue_interval_seconds=queue_interval_seconds,
+            query_instruction=_coerce_str(
+                _get_value(data, ("models", "rerank", "query_instruction"), None), ""
+            ),
+        )
+
+    @staticmethod
     def _parse_chat_model_config(data: dict[str, Any]) -> ChatModelConfig:
         queue_interval_seconds = _coerce_float(
             _get_value(
@@ -1235,7 +1594,7 @@ class Config:
                 legacy_env_key="CHAT_MODEL_DEEPSEEK_NEW_COT_SUPPORT",
             )
         )
-        return ChatModelConfig(
+        config = ChatModelConfig(
             api_url=_coerce_str(
                 _get_value(data, ("models", "chat", "api_url"), "CHAT_MODEL_API_URL"),
                 "",
@@ -1274,6 +1633,8 @@ class Config:
             thinking_include_budget=thinking_include_budget,
             thinking_tool_call_compat=thinking_tool_call_compat,
         )
+        config.pool = Config._parse_model_pool(data, "chat", config)
+        return config
 
     @staticmethod
     def _parse_vision_model_config(data: dict[str, Any]) -> VisionModelConfig:
@@ -1447,7 +1808,7 @@ class Config:
                 legacy_env_key="AGENT_MODEL_DEEPSEEK_NEW_COT_SUPPORT",
             )
         )
-        return AgentModelConfig(
+        config = AgentModelConfig(
             api_url=_coerce_str(
                 _get_value(data, ("models", "agent", "api_url"), "AGENT_MODEL_API_URL"),
                 "",
@@ -1486,102 +1847,8 @@ class Config:
             thinking_include_budget=thinking_include_budget,
             thinking_tool_call_compat=thinking_tool_call_compat,
         )
-
-    @staticmethod
-    def _parse_inflight_summary_model_config(
-        data: dict[str, Any], chat_model: ChatModelConfig
-    ) -> InflightSummaryModelConfig:
-        api_url = _coerce_str(
-            _get_value(
-                data,
-                ("models", "inflight_summary", "api_url"),
-                "INFLIGHT_SUMMARY_MODEL_API_URL",
-            ),
-            "",
-        )
-        api_key = _coerce_str(
-            _get_value(
-                data,
-                ("models", "inflight_summary", "api_key"),
-                "INFLIGHT_SUMMARY_MODEL_API_KEY",
-            ),
-            "",
-        )
-        model_name = _coerce_str(
-            _get_value(
-                data,
-                ("models", "inflight_summary", "model_name"),
-                "INFLIGHT_SUMMARY_MODEL_NAME",
-            ),
-            "",
-        )
-
-        queue_interval_seconds = _coerce_float(
-            _get_value(
-                data,
-                ("models", "inflight_summary", "queue_interval_seconds"),
-                "INFLIGHT_SUMMARY_MODEL_QUEUE_INTERVAL",
-            ),
-            1.5,
-        )
-        if queue_interval_seconds <= 0:
-            queue_interval_seconds = 1.5
-
-        thinking_include_budget = _coerce_bool(
-            _get_value(
-                data,
-                ("models", "inflight_summary", "thinking_include_budget"),
-                "INFLIGHT_SUMMARY_MODEL_THINKING_INCLUDE_BUDGET",
-            ),
-            False,
-        )
-        thinking_tool_call_compat = _coerce_bool(
-            _get_value(
-                data,
-                ("models", "inflight_summary", "thinking_tool_call_compat"),
-                "INFLIGHT_SUMMARY_MODEL_THINKING_TOOL_CALL_COMPAT",
-            ),
-            False,
-        )
-
-        resolved_api_url = api_url if api_url else chat_model.api_url
-        resolved_api_key = api_key if api_key else chat_model.api_key
-        resolved_model_name = model_name if model_name else chat_model.model_name
-        if not (api_url and api_key and model_name):
-            logger.info("未完整配置 inflight_summary 模型，已回退到 chat 模型")
-
-        return InflightSummaryModelConfig(
-            api_url=resolved_api_url,
-            api_key=resolved_api_key,
-            model_name=resolved_model_name,
-            max_tokens=_coerce_int(
-                _get_value(
-                    data,
-                    ("models", "inflight_summary", "max_tokens"),
-                    "INFLIGHT_SUMMARY_MODEL_MAX_TOKENS",
-                ),
-                128,
-            ),
-            queue_interval_seconds=queue_interval_seconds,
-            thinking_enabled=_coerce_bool(
-                _get_value(
-                    data,
-                    ("models", "inflight_summary", "thinking_enabled"),
-                    "INFLIGHT_SUMMARY_MODEL_THINKING_ENABLED",
-                ),
-                False,
-            ),
-            thinking_budget_tokens=_coerce_int(
-                _get_value(
-                    data,
-                    ("models", "inflight_summary", "thinking_budget_tokens"),
-                    "INFLIGHT_SUMMARY_MODEL_THINKING_BUDGET_TOKENS",
-                ),
-                0,
-            ),
-            thinking_include_budget=thinking_include_budget,
-            thinking_tool_call_compat=thinking_tool_call_compat,
-        )
+        config.pool = Config._parse_model_pool(data, "agent", config)
+        return config
 
     @staticmethod
     def _merge_admins(
@@ -1601,6 +1868,8 @@ class Config:
         chat_model: ChatModelConfig,
         vision_model: VisionModelConfig,
         agent_model: AgentModelConfig,
+        knowledge_enabled: bool,
+        embedding_model: EmbeddingModelConfig,
     ) -> None:
         missing: list[str] = []
         if bot_qq <= 0:
@@ -1627,6 +1896,11 @@ class Config:
             missing.append("models.agent.api_key")
         if not agent_model.model_name:
             missing.append("models.agent.model_name")
+        if knowledge_enabled:
+            if not embedding_model.api_url:
+                missing.append("models.embedding.api_url")
+            if not embedding_model.model_name:
+                missing.append("models.embedding.model_name")
         if missing:
             raise ValueError(f"缺少必需配置: {', '.join(missing)}")
 
@@ -1636,7 +1910,6 @@ class Config:
         vision_model: VisionModelConfig,
         security_model: SecurityModelConfig,
         agent_model: AgentModelConfig,
-        inflight_summary_model: InflightSummaryModelConfig,
     ) -> None:
         configs: list[
             tuple[
@@ -1644,15 +1917,13 @@ class Config:
                 ChatModelConfig
                 | VisionModelConfig
                 | SecurityModelConfig
-                | AgentModelConfig
-                | InflightSummaryModelConfig,
+                | AgentModelConfig,
             ]
         ] = [
             ("chat", chat_model),
             ("vision", vision_model),
             ("security", security_model),
             ("agent", agent_model),
-            ("inflight_summary", inflight_summary_model),
         ]
         for name, cfg in configs:
             logger.debug(
@@ -1678,7 +1949,6 @@ class Config:
                     VisionModelConfig,
                     SecurityModelConfig,
                     AgentModelConfig,
-                    InflightSummaryModelConfig,
                 ),
             ):
                 changes.update(_update_dataclass(old_value, new_value, prefix=name))
