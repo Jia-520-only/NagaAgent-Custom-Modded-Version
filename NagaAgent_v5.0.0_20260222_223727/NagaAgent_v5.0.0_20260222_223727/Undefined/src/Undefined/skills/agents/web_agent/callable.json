@@ -1,4 +1,0 @@
-{
-    "enabled": true,
-    "allowed_callers": ["naga_code_analysis_agent", "code_delivery_agent"]
-}
