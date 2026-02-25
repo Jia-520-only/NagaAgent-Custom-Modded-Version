@@ -180,12 +180,17 @@ class UndefinedMCPAgent:
         # 自动初始化（如果未初始化）
         if not self._initialized:
             try:
+                sys.stderr.write(f"[DEBUG] get_available_tools: 未初始化，开始自动初始化...\n")
                 self.initialize_sync()
+                sys.stderr.write(f"[DEBUG] get_available_tools: 初始化完成，_initialized={self._initialized}\n")
             except Exception as e:
                 sys.stderr.write(f"❌ 自动初始化失败: {e}\n")
+                import traceback
+                traceback.print_exc(file=sys.stderr)
                 return []
 
         if not self._initialized or not self._server:
+            sys.stderr.write(f"[DEBUG] get_available_tools: 初始化后状态错误 - _initialized={self._initialized}, _server={bool(self._server)}\n")
             return []
 
         import threading
