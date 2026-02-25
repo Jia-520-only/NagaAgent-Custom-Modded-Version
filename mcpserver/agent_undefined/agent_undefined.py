@@ -41,6 +41,64 @@ class SimpleVisionModelConfig:
     model_name: str
 
 
+class MultiToolRegistry:
+    """支持从多个目录加载工具的工具注册表"""
+
+    def __init__(self, tools_dirs: List[Path]):
+        """
+        初始化工具注册表
+
+        Args:
+            tools_dirs: 工具目录列表
+        """
+        from Undefined.tools import ToolRegistry
+
+        self.tool_registries: List[ToolRegistry] = []
+        self._tools_schema: List[Dict[str, Any]] = []
+        self._tools_handlers: Dict[str, Any] = {}
+
+        # 为每个目录创建独立的ToolRegistry
+        for tools_dir in tools_dirs:
+            if tools_dir.exists():
+                logger.info(f"加载工具目录: {tools_dir}")
+                registry = ToolRegistry(tools_dir)
+                self.tool_registries.append(registry)
+
+                # 合并工具schema
+                for schema in registry.get_tools_schema():
+                    tool_name = schema.get("function", {}).get("name", "")
+                    if tool_name and tool_name not in self._tools_handlers:
+                        self._tools_schema.append(schema)
+                        self._tools_handlers[tool_name] = registry._tools_handlers.get(tool_name)
+                    else:
+                        logger.warning(f"工具 {tool_name} 已存在，跳过重复加载")
+            else:
+                logger.warning(f"工具目录不存在: {tools_dir}")
+
+        tool_names = list(self._tools_handlers.keys())
+        logger.info(f"成功加载 {len(self._tools_schema)} 个工具: {', '.join(tool_names)}")
+
+    def get_tools_schema(self) -> List[Dict[str, Any]]:
+        """获取所有工具定义"""
+        return self._tools_schema
+
+    async def execute_tool(self, tool_name: str, args: Dict[str, Any], context: Dict[str, Any]) -> str:
+        """执行指定工具"""
+        handler = self._tools_handlers.get(tool_name)
+        if not handler:
+            return f"工具未找到: {tool_name}"
+
+        try:
+            if asyncio.iscoroutinefunction(handler):
+                result = await handler(args, context)
+            else:
+                result = handler(args, context)
+            return str(result)
+        except Exception as e:
+            logger.exception(f"执行工具 {tool_name} 时出错")
+            return f"执行工具 {tool_name} 时出错: {str(e)}"
+
+
 class AgentUndefined:
     """Undefined工具集成Agent"""
 
@@ -58,14 +116,19 @@ class AgentUndefined:
             config: 配置字典（可选）
         """
         try:
-            # 导入Undefined的工具注册表
-            from Undefined.tools import ToolRegistry
-
             logger.info("开始初始化Undefined工具系统...")
 
-            # 初始化工具注册表
-            tools_dir = Path(__file__).parent.parent.parent / "Undefined" / "src" / "Undefined" / "tools"
-            self.tool_registry = ToolRegistry(tools_dir)
+            # 定义多个工具目录
+            base_path = Path(__file__).parent.parent.parent
+            tools_dirs = [
+                base_path / "Undefined" / "src" / "Undefined" / "skills" / "tools",
+                base_path / "Undefined" / "src" / "Undefined" / "skills" / "agents" / "info_agent" / "tools",
+                # 可以添加更多agent的工具目录
+                # base_path / "Undefined" / "src" / "Undefined" / "skills" / "agents" / "web_agent" / "tools",
+            ]
+
+            # 初始化工具注册表（支持多目录）
+            self.tool_registry = MultiToolRegistry(tools_dirs)
             logger.info(f"工具注册表初始化完成，共加载 {len(self.tool_registry.get_tools_schema())} 个工具")
 
             # 初始化搜索包装器（如果可用）
