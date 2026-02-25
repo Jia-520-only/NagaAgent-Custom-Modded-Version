@@ -55,7 +55,7 @@ class MultiToolRegistry:
 
         self.tool_registries: List[ToolRegistry] = []
         self._tools_schema: List[Dict[str, Any]] = []
-        self._tools_handlers: Dict[str, Any] = {}
+        self._registry_map: Dict[str, ToolRegistry] = {}
 
         # 为每个目录创建独立的ToolRegistry
         for tools_dir in tools_dirs:
@@ -67,15 +67,15 @@ class MultiToolRegistry:
                 # 合并工具schema
                 for schema in registry.get_tools_schema():
                     tool_name = schema.get("function", {}).get("name", "")
-                    if tool_name and tool_name not in self._tools_handlers:
+                    if tool_name and tool_name not in self._registry_map:
                         self._tools_schema.append(schema)
-                        self._tools_handlers[tool_name] = registry._tools_handlers.get(tool_name)
+                        self._registry_map[tool_name] = registry
                     else:
                         logger.warning(f"工具 {tool_name} 已存在，跳过重复加载")
             else:
                 logger.warning(f"工具目录不存在: {tools_dir}")
 
-        tool_names = list(self._tools_handlers.keys())
+        tool_names = list(self._registry_map.keys())
         logger.info(f"成功加载 {len(self._tools_schema)} 个工具: {', '.join(tool_names)}")
 
     def get_tools_schema(self) -> List[Dict[str, Any]]:
@@ -84,15 +84,13 @@ class MultiToolRegistry:
 
     async def execute_tool(self, tool_name: str, args: Dict[str, Any], context: Dict[str, Any]) -> str:
         """执行指定工具"""
-        handler = self._tools_handlers.get(tool_name)
-        if not handler:
+        registry = self._registry_map.get(tool_name)
+        if not registry:
             return f"工具未找到: {tool_name}"
 
         try:
-            if asyncio.iscoroutinefunction(handler):
-                result = await handler(args, context)
-            else:
-                result = handler(args, context)
+            # 使用ToolRegistry的execute方法
+            result = await registry.execute(tool_name, args, context)
             return str(result)
         except Exception as e:
             logger.exception(f"执行工具 {tool_name} 时出错")
