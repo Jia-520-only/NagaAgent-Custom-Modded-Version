@@ -99,11 +99,14 @@ class UndefinedMCPAgent:
         Returns:
             str: 执行结果JSON字符串
         """
+        # 自动初始化（如果未初始化）
         if not self._initialized:
-            return json.dumps({
-                "success": False,
-                "result": "Undefined MCP Agent未初始化"
-            }, ensure_ascii=False)
+            await self.initialize()
+            if not self._initialized:
+                return json.dumps({
+                    "success": False,
+                    "result": "Undefined MCP Agent未初始化"
+                }, ensure_ascii=False)
 
         try:
             # 解析任务参数
@@ -174,6 +177,14 @@ class UndefinedMCPAgent:
         Returns:
             List[Dict[str, Any]]: 工具列表
         """
+        # 自动初始化（如果未初始化）
+        if not self._initialized:
+            try:
+                self.initialize_sync()
+            except Exception as e:
+                sys.stderr.write(f"❌ 自动初始化失败: {e}\n")
+                return []
+
         if not self._initialized or not self._server:
             return []
 
