@@ -1,69 +1,71 @@
 @echo off
-REM chcp 65001 > nul
+setlocal enabledelayedexpansion
+REM 尝试设置UTF-8编码，如果失败则忽略
+chcp 65001 > nul 2>&1
 echo ========================================
-echo     Undefined 依赖安装脚本
+echo     Undefined Dependency Installer
 echo ========================================
 echo.
 
 cd /d "%~dp0"
 
-REM 检查 Python 是否可用
+REM Check if Python is available
 python --version >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    echo [错误] 未找到 Python，请先安装 Python 3.11+
+    echo [Error] Python not found, please install Python 3.11+
     echo.
-    echo 下载地址: https://www.python.org/downloads/
+    echo Download from: https://www.python.org/downloads/
     pause
     exit /b 1
 )
 
-echo [1/5] 检查 Python 版本...
+echo [1/5] Checking Python version...
 python --version
 echo.
 
-echo [2/5] 升级 pip 到最新版本...
+echo [2/5] Upgrading pip...
 python -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 if %ERRORLEVEL% neq 0 (
-    echo [警告] pip 升级可能存在问题，继续安装...
+    echo [Warning] pip upgrade may have issues, continuing...
 )
 echo.
 
-echo [3/5] 检查是否使用 uv 包管理器...
+echo [3/5] Checking uv package manager...
 where uv >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    echo [OK] 检测到 uv，使用 uv 安装依赖...
+    echo [OK] Detected uv, using uv to install dependencies...
     uv sync
     if %ERRORLEVEL% neq 0 (
-        echo [警告] uv 安装可能存在问题，尝试使用 pip...
+        echo [Warning] uv installation may have issues, trying pip...
     ) else (
-        echo [OK] uv 依赖安装完成
+        echo [OK] uv dependency installation completed
         goto install_complete
     )
 ) else (
-    echo [提示] 未检测到 uv，使用 pip 安装依赖...
-    echo [提示] 如需更快速度，可安装 uv: pip install uv
+    echo [Info] uv not detected, using pip...
+    echo [Info] For faster installation, install uv: pip install uv
 )
 
 echo.
-echo [4/5] 使用 pip 安装依赖 (从 pyproject.toml)...
+echo [4/5] Installing dependencies from pyproject.toml...
 
-REM 检查是否存在 pyproject.toml
+REM Check if pyproject.toml exists
 if exist "pyproject.toml" (
     pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
     if %ERRORLEVEL% neq 0 (
-        echo [警告] 从 pyproject.toml 安装可能存在问题
+        echo [Warning] Installation from pyproject.toml may have issues
     )
 ) else (
-    echo [警告] 未找到 pyproject.toml
+    echo [Warning] pyproject.toml not found
 )
 
 echo.
-echo [5/5] 验证核心依赖...
-python -c "import httpx; import aiofiles; print('[OK] 核心依赖验证成功')" 2>nul
+echo [5/5] Verifying core dependencies...
+python -c "import httpx; import aiofiles; print('[OK] Core dependencies verified')" 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo [错误] 依赖安装验证失败
+    echo [Error] Dependency verification failed
     echo.
-    echo 请尝试手动安装依赖:
+    echo Try manual installation:
     echo   pip install httpx aiofiles aiohttp anthropic openai
     pause
     exit /b 1
@@ -72,13 +74,13 @@ if %ERRORLEVEL% neq 0 (
 :install_complete
 echo.
 echo ========================================
-echo     安装完成！
+echo     Installation Complete!
 echo ========================================
 echo.
-echo 提示：
-echo   - 依赖已安装在当前 Python 环境
-echo   - 如需虚拟环境，请运行: python -m venv venv
-echo   - 如需激活虚拟环境: venv\Scripts\activate
-echo   - 配置文件: config.toml
+echo Tips:
+echo   - Dependencies installed in current Python environment
+echo   - For virtual environment: python -m venv venv
+echo   - To activate virtual: venv\Scripts\activate
+echo   - Config file: config.toml
 echo.
 pause
