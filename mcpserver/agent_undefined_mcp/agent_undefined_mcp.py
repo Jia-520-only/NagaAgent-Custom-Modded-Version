@@ -27,25 +27,33 @@ class UndefinedMCPAgent:
         
     async def initialize(self, config: Optional[Dict[str, Any]] = None):
         """初始化Agent
-        
+
         Args:
             config: 配置字典（可选）
         """
         if self._initialized:
             return
-            
+
         try:
             # 获取Undefined MCP Server单例
             self._server = await get_server()
-            
+
+            # 如果服务器未初始化，尝试重新初始化
+            if self._server and not self._server._initialized:
+                sys.stderr.write("⚠️ Undefined MCP Server已存在但未初始化，尝试重新初始化...\n")
+                init_result = await self._server.initialize()
+                if not init_result:
+                    sys.stderr.write("❌ Undefined MCP Server重新初始化失败\n")
+                    return False
+
             if not self._server or not self._server._initialized:
                 sys.stderr.write("❌ Undefined MCP Server初始化失败\n")
                 return False
-            
+
             self._initialized = True
             sys.stderr.write("✅ Undefined MCP Agent初始化成功\n")
             return True
-            
+
         except Exception as e:
             sys.stderr.write(f"❌ Undefined MCP Agent初始化失败: {e}\n")
             import traceback

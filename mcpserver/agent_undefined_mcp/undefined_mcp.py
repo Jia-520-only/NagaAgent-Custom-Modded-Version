@@ -75,10 +75,14 @@ class UndefinedMCPServer:
             # 切换到Undefined目录加载配置
             import os
             original_dir = os.getcwd()
-            os.chdir(str(self.undefined_path))
+            target_dir = str(self.undefined_path)
+            sys.stderr.write(f"[DEBUG] 切换工作目录: {original_dir} -> {target_dir}\n")
+            os.chdir(target_dir)
 
             # 加载Undefined配置
+            sys.stderr.write(f"[DEBUG] 开始加载Undefined配置...\n")
             self.config = get_config()
+            sys.stderr.write(f"[DEBUG] Undefined配置加载成功\n")
 
             # 恢复原目录
             os.chdir(original_dir)
