@@ -245,15 +245,15 @@ class UndefinedMCPServer:
                 logger.info(f"[UndefinedMCP] 找到Agent: {tool_name}")
                 return await self._call_agent(tool_name, arguments, context)
 
-            # 检查是否是直接的 tool 名称（优先旧版本，如 ai_draw_one, local_ai_draw）
-            if self.old_tool_registry and tool_name in self.old_tool_registry._tools_handlers:
-                logger.info(f"[UndefinedMCP] 找到旧版工具: {tool_name}")
-                return await self._call_old_tool_internal(tool_name, arguments, context)
-
-            # 检查是否是新版本的 tool 名称(如 get_current_time)
+            # 检查是否是新版本的 tool 名称(如 get_current_time) - 优先级提高
             if self.new_tool_registry and tool_name in self.new_tool_registry._items:
                 logger.info(f"[UndefinedMCP] 找到新版工具: {tool_name}")
                 return await self._call_new_tool_internal(tool_name, arguments, context)
+
+            # 检查是否是直接的 tool 名称（旧版本，如 ai_draw_one, local_ai_draw）
+            if self.old_tool_registry and tool_name in self.old_tool_registry._tools_handlers:
+                logger.info(f"[UndefinedMCP] 找到旧版工具: {tool_name}")
+                return await self._call_old_tool_internal(tool_name, arguments, context)
 
             # 打印调试信息：工具列表
             if self.old_tool_registry:
@@ -284,12 +284,12 @@ class UndefinedMCPServer:
                         prompt = f"请执行{entertainment_subtools[tool_id]}功能: {arguments.get('prompt', '')}"
                         return await self._call_agent("entertainment_agent", {"prompt": prompt}, context)
                     else:
-                        # 优先检查旧版工具（ai_draw_one 和 local_ai_draw）
-                        if self.old_tool_registry and tool_id in self.old_tool_registry._tools_handlers:
-                            return await self._call_old_tool_internal(tool_id, arguments, context)
-                        # 然后检查新版工具
-                        elif self.new_tool_registry and tool_id in self.new_tool_registry._items:
+                        # 优先检查新版工具
+                        if self.new_tool_registry and tool_id in self.new_tool_registry._items:
                             return await self._call_new_tool_internal(tool_id, arguments, context)
+                        # 然后检查旧版工具（ai_draw_one 和 local_ai_draw）
+                        elif self.old_tool_registry and tool_id in self.old_tool_registry._tools_handlers:
+                            return await self._call_old_tool_internal(tool_id, arguments, context)
                 elif tool_type == "agent":
                     return await self._call_agent(tool_id, arguments, context)
                 else:
@@ -302,12 +302,12 @@ class UndefinedMCPServer:
                     logger.info(f"[UndefinedMCP] 识别到 {tool_name} 为 entertainment_agent 子工具")
                     prompt = f"请执行{entertainment_subtools[tool_name]}功能: {arguments.get('prompt', '')}"
                     return await self._call_agent("entertainment_agent", {"prompt": prompt}, context)
-                # 然后尝试旧版工具（ai_draw_one 和 local_ai_draw）
-                elif self.old_tool_registry and tool_name in self.old_tool_registry._tools_handlers:
-                    return await self._call_old_tool_internal(tool_name, arguments, context)
                 # 然后尝试新版工具
                 elif self.new_tool_registry and tool_name in self.new_tool_registry._items:
                     return await self._call_new_tool_internal(tool_name, arguments, context)
+                # 然后尝试旧版工具（ai_draw_one 和 local_ai_draw）
+                elif self.old_tool_registry and tool_name in self.old_tool_registry._tools_handlers:
+                    return await self._call_old_tool_internal(tool_name, arguments, context)
                 # 最后尝试Agent
                 elif self.agent_registry and tool_name in self.agent_registry._items:
                     return await self._call_agent(tool_name, arguments, context)
