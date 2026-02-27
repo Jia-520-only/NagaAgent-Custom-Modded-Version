@@ -15,12 +15,20 @@ logger = logging.getLogger(__name__)
 UNDEFINED_PATH = Path(__file__).parent.parent.parent / "Undefined"
 # Undefined的源码在src/Undefined下
 UNDEFINED_SRC_PATH = UNDEFINED_PATH / "src"
-sys.path.insert(0, str(UNDEFINED_SRC_PATH))
+
+# 临时切换工作目录到 Undefined，确保 Python 优先使用 ai/ 目录而不是 ai.py 文件
+import os
+_original_cwd = os.getcwd()
+os.chdir(str(UNDEFINED_PATH))
 
 try:
+    # 添加 src 到 sys.path（在 Undefined 目录下）
+    sys.path.insert(0, str(UNDEFINED_SRC_PATH))
+
     # 导入Undefined的核心模块
-    # 使用从 ai.py 导入的方式（与 Undefined/main.py 保持一致）
+    # 使用从 ai/ 目录导入的方式
     from Undefined.ai import AIClient
+
     from Undefined.config import get_config
     # 导入新版本ToolRegistry（用于skills/tools）
     from Undefined.skills.tools import ToolRegistry as NewToolRegistry
@@ -33,6 +41,7 @@ try:
     from Undefined import __version__
 
     print(f"Undefined版本: {__version__}")
+    print(f"AIClient来自: {AIClient.__module__}")
 except ImportError as e:
     print(f"警告: 无法导入Undefined模块 - {e}")
     import traceback
@@ -46,6 +55,9 @@ except ImportError as e:
     MemoryStorage = None
     EndSummaryStorage = None
     run_agent_with_tools = None
+finally:
+    # 恢复原始工作目录
+    os.chdir(_original_cwd)
 
 
 class UndefinedMCPServer:
