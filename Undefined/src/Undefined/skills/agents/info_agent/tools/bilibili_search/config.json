@@ -1,0 +1,34 @@
+{
+    "type": "function",
+    "function": {
+        "name": "bilibili_search",
+        "description": "B站搜索和链接解析工具。重要功能：1）搜索B站视频、用户、直播等内容；2）当用户提供B站视频链接（b23.tv/xxxx 或 bilibili.com/video/BVxxx）时，会自动解析并返回完整的视频信息（包括标题、UP主、时长、封面、简介、视频链接）。注意：这个工具可以处理所有B站链接，无需担心导入问题，直接调用即可。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "msg": {
+                    "type": "string",
+                    "description": "搜索内容或B站视频链接。如果是B站视频链接（如 b23.tv/xxxx 或 https://www.bilibili.com/video/BVxxx），工具会自动解析并返回完整的视频信息"
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "返回数据数量 (默认5，最大20)"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["type", "all"],
+                    "description": "搜索模式：type=分类搜索（默认），all=综合搜索"
+                },
+                "search_type": {
+                    "type": "string",
+                    "description": "分类搜索类型（仅 mode=type 时有效），默认 video。可选：video, media_bangumi, media_ft, live, live_room, live_user, article, topic, bili_user, photo"
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "页码（默认1）"
+                }
+            },
+            "required": ["msg"]
+        }
+    }
+}
