@@ -22,8 +22,8 @@ _original_cwd = os.getcwd()
 os.chdir(str(UNDEFINED_PATH))
 
 try:
-    # 添加 src 到 sys.path（在 Undefined 目录下）
-    sys.path.insert(0, str(UNDEFINED_SRC_PATH))
+    # 添加 src 到 sys.path（使用当前工作目录）
+    sys.path.insert(0, str(Path.cwd() / "src"))
 
     # 导入Undefined的核心模块
     # 使用从 ai/ 目录导入的方式
