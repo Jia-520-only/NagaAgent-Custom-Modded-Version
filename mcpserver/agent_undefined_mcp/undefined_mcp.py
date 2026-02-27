@@ -81,29 +81,47 @@ class UndefinedMCPServer:
 
             # 加载Undefined配置（使用非严格模式，允许配置字段为空）
             sys.stderr.write(f"[DEBUG] 开始加载Undefined配置...\n")
-            self.config = get_config(strict=False)
-            sys.stderr.write(f"[DEBUG] Undefined配置加载成功\n")
+            try:
+                self.config = get_config(strict=False)
+                sys.stderr.write(f"[DEBUG] Undefined配置加载成功\n")
+            except Exception as config_error:
+                sys.stderr.write(f"[DEBUG] Undefined配置加载失败: {config_error}\n")
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                os.chdir(original_dir)
+                return False
 
             # 恢复原目录
             os.chdir(original_dir)
 
             # 初始化存储
+            sys.stderr.write(f"[DEBUG] 初始化MemoryStorage...\n")
             memory_storage = MemoryStorage()
+            sys.stderr.write(f"[DEBUG] 初始化EndSummaryStorage...\n")
             end_summary_storage = EndSummaryStorage()
 
             # 初始化AI客户端（传入必要的配置项）
-            self.ai_client = AIClient(
-                chat_config=self.config.chat_model,
-                vision_config=self.config.vision_model,
-                agent_config=self.config.agent_model,
-                memory_storage=memory_storage,
-                end_summary_storage=end_summary_storage,
-                bot_qq=self.config.bot_qq,
-                runtime_config=self.config
-            )
+            sys.stderr.write(f"[DEBUG] 初始化AIClient...\n")
+            try:
+                self.ai_client = AIClient(
+                    chat_config=self.config.chat_model,
+                    vision_config=self.config.vision_model,
+                    agent_config=self.config.agent_model,
+                    memory_storage=memory_storage,
+                    end_summary_storage=end_summary_storage,
+                    bot_qq=self.config.bot_qq,
+                    runtime_config=self.config
+                )
+                sys.stderr.write(f"[DEBUG] AIClient初始化成功\n")
+            except Exception as ai_error:
+                sys.stderr.write(f"[DEBUG] AIClient初始化失败: {ai_error}\n")
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                return False
 
             # 获取工具和Agent注册表
             # 新版本ToolRegistry（skills/tools和agents/*/tools目录）
+            sys.stderr.write(f"[DEBUG] 初始化ToolRegistry...\n")
             new_tools_dir = UNDEFINED_SRC_PATH / "Undefined" / "skills" / "tools"
             info_agent_tools_dir = UNDEFINED_SRC_PATH / "Undefined" / "skills" / "agents" / "info_agent" / "tools"
             self.new_tool_registry = NewToolRegistry(new_tools_dir)
@@ -113,10 +131,19 @@ class UndefinedMCPServer:
             # 旧版本ToolRegistry（tools目录，包含ai_draw_one和local_ai_draw）
             self.old_tool_registry = OldToolRegistry()
             self.agent_registry = AgentRegistry()
+            sys.stderr.write(f"[DEBUG] ToolRegistry初始化成功\n")
 
             # 扫描并加载Agent（同步方法）
             # 注意：这些是同步方法，不需要await
-            self.agent_registry.load_agents()
+            sys.stderr.write(f"[DEBUG] 开始加载Agents...\n")
+            try:
+                self.agent_registry.load_agents()
+                sys.stderr.write(f"[DEBUG] Agent加载成功，共 {len(self.agent_registry._items)} 个\n")
+            except Exception as agent_error:
+                sys.stderr.write(f"[DEBUG] Agent加载失败: {agent_error}\n")
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                # Agent加载失败不影响整体初始化
 
             self._initialized = True
             print(f"Undefined MCP Server 初始化成功")
