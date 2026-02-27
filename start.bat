@@ -23,7 +23,7 @@ if exist ".venv\Scripts\python.exe" (
     echo Or create manually:
     echo   python -m venv .venv
     echo   .venv\Scripts\activate
-    echo   pip install -r requirements_install.txt
+    echo   pip install -r requirements.txt
     echo ============================================================
     pause
 )  

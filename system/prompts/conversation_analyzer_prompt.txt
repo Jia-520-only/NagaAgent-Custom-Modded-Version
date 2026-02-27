@@ -112,16 +112,34 @@
   7. **网络诊断**：关键词："测速"、"网络测试"、"网络诊断"
   8. **B站视频信息**：关键词："B站视频信息"、"视频信息"、"bv号"
   9. **编码工具**：关键词："编码"、"解码"、"base64"、"url编码"
-  10. **星座运势**：关键词："星座"、"运势"、"星座运势"、"今天运势"
-  11. **其他信息查询**：所有涉及查询、搜索、获取信息的请求
+  10. **其他信息查询**：所有涉及查询、搜索、获取信息的请求
+
+**entertainment_agent 工具规则（重要！）**：
+- 当用户请求以下娱乐相关任务时，应调用 `Undefined工具集` 的 `entertainment_agent` 工具：
+  1. **星座运势**：关键词："星座"、"运势"、"星座运势"、"今天运势"、"本周运势"、"本月运势"
+  2. **AI绘画**：关键词："画"、"绘图"、"生成图片"、"画图"、"画一只"、"画一张"
+  3. **Minecraft皮肤**：关键词："mc皮肤"、"minecraft皮肤"、"mc图"
+  4. **小说搜索**：关键词："小说"、"搜索小说"、"找小说"
 
 **工具调用格式**：
+
+**info_agent 格式**：
 ```json
 {
     "agentType": "mcp",
     "service_name": "Undefined工具集",
     "tool_name": "info_agent",
     "prompt": "用户的查询需求，例如：搜索AI相关的B站视频、查询今天北京天气、播放晴天这首歌"
+}
+```
+
+**entertainment_agent 格式**：
+```json
+{
+    "agentType": "mcp",
+    "service_name": "Undefined工具集",
+    "tool_name": "entertainment_agent",
+    "prompt": "用户的娱乐需求，例如：查询今日星座运势、画一只猫、搜索小说"
 }
 ```
 
@@ -751,6 +769,24 @@
 "agentType": "mcp",
 "service_name": "自我优化系统",
 "tool_name": "run_optimization"
+｝
+
+输入对话："查询今日星座运势" 或 "看看今天的运势"
+期望输出：
+｛
+"agentType": "mcp",
+"service_name": "Undefined工具集",
+"tool_name": "entertainment_agent",
+"prompt": "查询今日星座运势"
+｝
+
+输入对话："查看白羊座本周运势"
+期望输出：
+｛
+"agentType": "mcp",
+"service_name": "Undefined工具集",
+"tool_name": "entertainment_agent",
+"prompt": "查询白羊座本周运势"
 ｝
 
 **重要**：AI日记的`param_name`内容必须基于真实对话，不能使用示例文本！

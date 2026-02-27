@@ -79,9 +79,9 @@ class UndefinedMCPServer:
             sys.stderr.write(f"[DEBUG] 切换工作目录: {original_dir} -> {target_dir}\n")
             os.chdir(target_dir)
 
-            # 加载Undefined配置
+            # 加载Undefined配置（使用非严格模式，允许配置字段为空）
             sys.stderr.write(f"[DEBUG] 开始加载Undefined配置...\n")
-            self.config = get_config()
+            self.config = get_config(strict=False)
             sys.stderr.write(f"[DEBUG] Undefined配置加载成功\n")
 
             # 恢复原目录

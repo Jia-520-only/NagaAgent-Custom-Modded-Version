@@ -102,14 +102,14 @@ echo.
 
 REM 安装依赖
 echo [5/6] Installing project dependencies...
-if exist "requirements_install.txt" (
-    pip install -r requirements_install.txt -i https://pypi.org/simple --default-timeout=300
+if exist "requirements.txt" (
+    pip install -r requirements.txt -i https://pypi.org/simple --default-timeout=300
     if %errorLevel% neq 0 (
         echo [Warning] Some dependencies failed to install, but continuing...
     )
     echo [OK] Dependencies installed (some may have failed)
 ) else (
-    echo [Warning] requirements_install.txt not found, skipping dependency installation
+    echo [Warning] requirements.txt not found, skipping dependency installation
 )
 echo.
 
@@ -129,7 +129,11 @@ if exist "config.json" (
 
 echo Starting configuration wizard...
 echo.
-python install_wizard.py
+if exist "install_wizard.py" (
+    python install_wizard.py
+) else (
+    echo [Warning] install_wizard.py not found, skipping configuration wizard
+)
 
 :install_complete
 
@@ -144,7 +148,7 @@ echo   2. Install and start Neo4j if needed
 echo   3. Install and start GPT-SoVITS if needed
 echo   4. Start program:
 echo      - start.bat      (Start main program)
-echo      - start_all.bat  (Start all services)
+echo      - start.sh       (Start main program on Linux/Mac)
 echo.
 echo ============================================================
 echo.

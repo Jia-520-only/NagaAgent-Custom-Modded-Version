@@ -85,7 +85,7 @@ def _should_send_result_to_user(tool_name: str) -> bool:
     user_facing_tools = {
         # 信息搜集类
         "搜索", "web_search", "web_browse", "bilibili_search", "bilibili_user_info",
-        "info_agent", "get_current_time", "get_weather",
+        "info_agent", "entertainment_agent", "get_current_time", "get_weather",
 
         # 内容输出类
         "ai_draw_one", "local_ai_draw", "render_and_send_image",

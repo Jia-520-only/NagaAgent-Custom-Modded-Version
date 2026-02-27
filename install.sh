@@ -96,15 +96,15 @@ check_pip() {
 check_venv() {
     print_info "检查虚拟环境..."
 
-    if [ -d "venv" ]; then
+    if [ -d ".venv" ]; then
         print_warning "检测到已存在的虚拟环境"
         read -p "是否删除并重新创建? [y/N]: " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             print_info "删除现有虚拟环境..."
-            rm -rf venv
+            rm -rf .venv
             print_info "创建新虚拟环境..."
-            $PYTHON_CMD -m venv venv
+            $PYTHON_CMD -m venv .venv
             if [ $? -ne 0 ]; then
                 print_error "创建虚拟环境失败"
                 exit 1
@@ -112,9 +112,9 @@ check_venv() {
         else
             print_info "保留现有虚拟环境"
         fi
-    else
+    else (
         print_info "创建虚拟环境..."
-        $PYTHON_CMD -m venv venv
+        $PYTHON_CMD -m venv .venv
         if [ $? -ne 0 ]; then
             print_error "创建虚拟环境失败"
             exit 1
@@ -134,6 +134,12 @@ activate_venv() {
         print_success "虚拟环境已激活"
     elif [ -f "venv/Scripts/activate" ]; then
         source venv/Scripts/activate
+        print_success "虚拟环境已激活"
+    elif [ -f ".venv/bin/activate" ]; then
+        source .venv/bin/activate
+        print_success "虚拟环境已激活"
+    elif [ -f ".venv/Scripts/activate" ]; then
+        source .venv/Scripts/activate
         print_success "虚拟环境已激活"
     else
         print_error "找不到虚拟环境激活脚本"
@@ -162,7 +168,7 @@ install_dependencies() {
             exit 1
         fi
         print_success "依赖安装成功"
-    else
+    else (
         print_warning "未找到 requirements.txt，跳过依赖安装"
     fi
 
@@ -171,9 +177,14 @@ install_dependencies() {
 
 # 运行配置向导
 run_wizard() {
-    print_info "启动配置向导..."
-    echo ""
-    python install_wizard.py
+    if [ -f "install_wizard.py" ]; then
+        print_info "启动配置向导..."
+        echo ""
+        python install_wizard.py
+    else (
+        print_warning "未找到 install_wizard.py，跳过配置向导"
+        echo ""
+    fi
 }
 
 # 主函数

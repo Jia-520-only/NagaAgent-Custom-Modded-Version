@@ -6,16 +6,6 @@
 
 ## 📋 脚本列表
 
-### 📦 安装与更新
-
-| 脚本 | 功能 | 使用方法 |
-|------|------|----------|
-| `setup.bat` | Windows 自动安装脚本 | 双击运行 |
-| `setup.sh` | Linux/macOS 自动安装脚本 | `./setup.sh` |
-| `setup.py` | Python 安装脚本 | `python setup.py` |
-| `update.bat` | Windows 更新脚本 | 双击运行 |
-| `update.py` | Python 更新脚本 | `python update.py` |
-
 ### 🚀 启动脚本
 
 | 脚本 | 功能 | 使用方法 |
@@ -46,12 +36,32 @@
 
 ### 首次安装
 
+#### Windows
 ```bash
-# Windows
-setup.bat
+# 双击运行或执行
+install.bat
+```
 
+#### Linux/macOS
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+或手动创建虚拟环境并安装依赖:
+
+```bash
+# 创建虚拟环境
+python -m venv .venv
+
+# 激活虚拟环境
+# Windows
+.\.venv\Scripts\activate
 # Linux/macOS
-./setup.sh
+source .venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
 ```
 
 ### 启动应用
@@ -79,17 +89,6 @@ python switch_database.py
 ---
 
 ## 📝 详细说明
-
-### setup.bat / setup.sh
-
-**功能**：自动安装所有依赖和初始化项目
-
-**执行内容**：
-1. 检查 Python 版本
-2. 创建虚拟环境
-3. 安装依赖
-4. 检查系统环境
-5. 复制配置文件模板
 
 ### configure_betta_fish.py
 
@@ -226,21 +225,20 @@ uv sync
 ### 脚本无法运行
 
 1. 检查文件权限
-   ```bash
-   # Linux/macOS
-   chmod +x setup.sh
-   chmod +x start.sh
-   ```
+    ```bash
+    # Linux/macOS
+    chmod +x start.sh
+    ```
 
 2. 检查 Python 是否在 PATH 中
-   ```bash
-   python --version
-   ```
+    ```bash
+    python --version
+    ```
 
 3. 尝试使用完整路径
-   ```bash
-   python e:\NagaAgent\configure_betta_fish.py
-   ```
+    ```bash
+    python e:\NagaAgent\configure_betta_fish.py
+    ```
 
 ---
 

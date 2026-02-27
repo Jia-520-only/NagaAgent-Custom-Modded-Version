@@ -639,8 +639,7 @@ def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 
-# 已移除自动更新功能 - MIYA_OK 定制版
-# 原函数 check_and_update_if_needed() 已删除
+
 
 # 延迟初始化 - 避免启动时阻塞
 def _lazy_init_services():

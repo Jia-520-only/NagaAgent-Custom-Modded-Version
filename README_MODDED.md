@@ -141,15 +141,15 @@ cd NagaAgent-main
 
 **Windows:**
 ```bash
-setup.bat
+install.bat
 ```
 
 **Linux/macOS:**
 ```bash
-bash setup.sh
+./install.sh
 ```
 
-或手动安装:
+或手动安装依赖:
 ```bash
 pip install -r requirements.txt
 ```

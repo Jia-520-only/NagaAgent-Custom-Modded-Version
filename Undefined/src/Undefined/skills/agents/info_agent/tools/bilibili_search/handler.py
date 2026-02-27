@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import logging
@@ -203,10 +203,10 @@ def _format_items(
     result_type: str,
 ) -> str:
     if not items:
-        return f"未找到与“{query}”相关的结果。"
+        return f'未找到与"{query}"相关的结果。'
 
     header_type = result_type or ("video" if mode == "type" else "unknown")
-    lines = [f"🔍 B站搜索结果（mode={mode}, type={header_type}）"]
+    lines = [f"🔍 B站搜索结果（mode={mode}, type={header_type}）", ""]
 
     for idx, item in enumerate(items[:limit], start=1):
         title = _item_title(item)
@@ -461,3 +461,4 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> str:
     except Exception as exc:
         logger.exception("B站搜索失败: %s", exc)
         return "B站搜索失败，请稍后重试"
+

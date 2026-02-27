@@ -9,6 +9,12 @@ if [ -x "$VENV_PY" ]; then
     # 将所有传入参数传给 main.py
     exec "$VENV_PY" "$DIR/main.py" "$@"
 else
-    echo "❌ 未检测到虚拟环境，请先运行 setup.sh 进行初始化，或手动配置。" >&2
+    echo "❌ 未检测到虚拟环境，请先运行安装脚本：" >&2
+    echo "   Windows: install.bat" >&2
+    echo "   Linux/Mac: ./install.sh" >&2
+    echo "或手动创建：" >&2
+    echo "   python3 -m venv .venv" >&2
+    echo "   source .venv/bin/activate" >&2
+    echo "   pip install -r requirements.txt" >&2
     exit 2
 fi
