@@ -76,6 +76,17 @@ class AppLauncherAgent(object):
             # 优化：优先使用缓存，如果缓存为空才扫描
             if not self.scanner._scan_completed:
                 print("📋 首次获取应用列表，正在扫描...")
+                # 首次扫描使用较长的超时时间
+                try:
+                    await asyncio.wait_for(self.scanner.ensure_scan_completed(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    print("⚠️ 应用列表扫描超时（>60秒），请稍后重试")
+                    return {
+                        "success": False,
+                        "status": "timeout",
+                        "message": "应用列表扫描超时，请稍后重试",
+                        "data": {}
+                    }
             else:
                 print("📋 使用缓存的应用列表")
 
@@ -101,6 +112,8 @@ class AppLauncherAgent(object):
                 }
             }
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {
                 "success": False,
                 "status": "error",
@@ -112,6 +125,16 @@ class AppLauncherAgent(object):
         """第二轮交互：异步启动指定应用 #"""
         try:
             print(f"🔍 查找应用: {app_name}")
+
+            # 如果扫描未完成，先确保扫描完成（带超时保护）
+            if not self.scanner._scan_completed:
+                print("📋 应用列表未扫描，开始扫描...")
+                try:
+                    # 设置较长的超时时间
+                    await asyncio.wait_for(self.scanner.ensure_scan_completed(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    print("⚠️ 应用扫描超时，使用可用缓存")
+                    # 继续使用已有的缓存（如果有）
 
             # 从综合扫描器中查找应用 #
             app_info = await self.scanner.find_app_by_name(app_name)

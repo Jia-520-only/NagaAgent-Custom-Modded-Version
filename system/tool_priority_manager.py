@@ -80,13 +80,19 @@ class ToolPriorityManager:
         "bilibili_user_info": "web_search",
         "video_random_recommend": "web_search",
 
-        # 应用启动
+        # 应用启动（需要更长超时时间）
         "获取应用列表": "app_launcher",
         "启动应用": "app_launcher",
 
         # 消息工具
         "发送QQ消息": "messaging",
         "发送微信消息": "messaging",
+    }
+
+    # 工具特定的超时时间（毫秒），会覆盖默认的tool_timeout
+    TOOL_SPECIFIC_TIMEOUT = {
+        "启动应用": 60000,  # 应用启动需要更长时间（60秒）
+        "获取应用列表": 60000,  # 获取应用列表也需要较长时间
     }
 
     # 参数名映射（用于修复参数名不匹配的问题）
@@ -357,12 +363,16 @@ class ToolPriorityManager:
                     mapped_params[new_key] = mapped_params.pop(old_key)
                     logger.debug(f"[ToolPriority] 参数名映射: {tool_name}.{old_key} -> {new_key}")
 
+        # 获取工具特定的超时时间，如果没有则使用默认超时
+        tool_timeout = self.TOOL_SPECIFIC_TIMEOUT.get(tool_name, self.tool_timeout)
+        logger.debug(f"[ToolPriority] 工具 {tool_name} 使用超时: {tool_timeout}ms")
+
         for retry in range(self.max_retries + 1):
             try:
-                # 使用超时机制
+                # 使用超时机制（根据工具类型使用不同的超时时间）
                 result = await asyncio.wait_for(
                     mcp_manager.unified_call(service_name, tool_name, mapped_params),
-                    timeout=self.tool_timeout / 1000
+                    timeout=tool_timeout / 1000
                 )
 
                 logger.debug(f"[ToolPriority] 工具 {tool_name} 原始返回类型: {type(result)}, 内容: {str(result)[:200]}")
