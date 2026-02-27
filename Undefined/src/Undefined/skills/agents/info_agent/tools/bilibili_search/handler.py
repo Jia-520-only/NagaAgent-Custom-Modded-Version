@@ -214,14 +214,12 @@ def _format_items(
         link = _item_url(item)
         meta = _item_meta(item)
 
-        # 标题和链接在同一行，方便直接点击
-        if link:
-            lines.append(f"{idx}. {title} {link}{meta}")
-        else:
-            lines.append(f"{idx}. {title}{meta}")
-
+        lines.append(f"{idx}. {title}{meta}")
         if author:
             lines.append(f"   UP主: {author}")
+        # 链接单独一行，使用特殊标记确保AI不会忽略
+        if link:
+            lines.append(f"   视频链接: {link}")
 
     return "\n".join(lines)
 
