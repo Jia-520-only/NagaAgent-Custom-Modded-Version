@@ -243,6 +243,12 @@ async def run_agent_with_tools(
                         }
                     )
 
+                # 特殊处理：如果调用了 bilibili_search，直接返回结果不再继续
+                if "bilibili_search" in tool_api_names:
+                    for index, tool_name in enumerate(tool_api_names):
+                        if tool_name == "bilibili_search":
+                            return str(results[index])
+
             # 处理 end 工具调用
             if end_tool_call:
                 end_call_id = str(end_tool_call.get("id", ""))
