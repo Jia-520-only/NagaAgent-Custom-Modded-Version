@@ -19,6 +19,7 @@ sys.path.insert(0, str(UNDEFINED_SRC_PATH))
 
 try:
     # 导入Undefined的核心模块
+    # 使用从 ai.py 导入的方式（与 Undefined/main.py 保持一致）
     from Undefined.ai import AIClient
     from Undefined.config import get_config
     # 导入新版本ToolRegistry（用于skills/tools）
@@ -34,7 +35,9 @@ try:
     print(f"Undefined版本: {__version__}")
 except ImportError as e:
     print(f"警告: 无法导入Undefined模块 - {e}")
-    print(f"请确保Undefined已正确安装在: {UNDEFINED_PATH}")
+    import traceback
+    traceback.print_exc()
+    print(f"Undefined源码路径: {UNDEFINED_SRC_PATH}")
     AIClient = None
     get_config = None
     NewToolRegistry = None
