@@ -51,6 +51,12 @@ class MultiToolRegistry:
         Args:
             tools_dirs: 工具目录列表
         """
+        # 清除可能存在的 Undefined.ai 缓存，确保使用 ai/ 目录而不是 ai.py 文件
+        for module_name in list(sys.modules.keys()):
+            if module_name.startswith('Undefined.ai'):
+                del sys.modules[module_name]
+                logger.debug(f"清除模块缓存: {module_name}")
+
         from Undefined.tools import ToolRegistry
 
         self.tool_registries: List[ToolRegistry] = []
@@ -183,6 +189,12 @@ class AgentUndefined:
             if undefined_env.exists():
                 load_dotenv(undefined_env)
                 logger.info(f"已加载Undefined配置文件: {undefined_env}")
+
+                # 清除可能存在的 Undefined.ai 缓存，确保使用 ai/ 目录而不是 ai.py 文件
+                for module_name in list(sys.modules.keys()):
+                    if module_name.startswith('Undefined.ai'):
+                        del sys.modules[module_name]
+                        logger.debug(f"清除模块缓存: {module_name}")
 
                 # 导入Undefined的AI Client
                 from Undefined.ai import AIClient

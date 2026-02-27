@@ -25,6 +25,13 @@ try:
     # 添加 src 到 sys.path（使用当前工作目录）
     sys.path.insert(0, str(Path.cwd() / "src"))
 
+    # 关键修复: 清除可能存在的错误缓存
+    # 如果之前 agent_undefined 加载了 ai.py 文件，需要清除缓存
+    for module_name in list(sys.modules.keys()):
+        if module_name.startswith('Undefined.ai'):
+            del sys.modules[module_name]
+            sys.stderr.write(f"[DEBUG] 清除模块缓存: {module_name}\n")
+
     # 导入Undefined的核心模块
     # 使用从 ai/ 目录导入的方式
     from Undefined.ai import AIClient
