@@ -22,6 +22,41 @@ class InstallWizard:
         self.script_dir = script_dir
         self.config = {}
 
+    def load_example_config(self) -> Dict[str, Any]:
+        """加载示例配置文件，处理多种编码"""
+        if not self.config_example_path.exists():
+            return {}
+
+        # 尝试用多种编码读取
+        encodings = ['utf-8', 'utf-16', 'utf-16-le', 'gbk', 'latin-1']
+        last_error = None
+
+        for encoding in encodings:
+            try:
+                with open(self.config_example_path, 'r', encoding=encoding) as f:
+                    # 使用json5解析支持注释的JSON
+                    try:
+                        config_data = json5.load(f)
+                        print(f"✅ 使用 {encoding} 编码成功加载示例配置")
+                        return config_data
+                    except Exception as json_error:
+                        # json5解析失败，尝试标准JSON
+                        f.seek(0)
+                        content = f.read()
+                        config_data = json.loads(content)
+                        print(f"✅ 使用 {encoding} 编码（标准JSON）成功加载示例配置")
+                        return config_data
+            except UnicodeDecodeError as e:
+                last_error = e
+                continue
+            except Exception as e:
+                print(f"加载示例配置失败（{encoding}）: {e}")
+                last_error = e
+                continue
+
+        print(f"⚠️ 无法加载示例配置: {last_error}")
+        return {}
+
     def detect_environment(self) -> Dict[str, Any]:
         """检测运行环境"""
         return {
