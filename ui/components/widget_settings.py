@@ -1222,14 +1222,14 @@ class ElegantSettingsWidget(QWidget):
             gpt_sovits_ref_free_checkbox = QCheckBox()
             gpt_sovits_ref_free_checkbox.setChecked(getattr(config.tts, 'gpt_sovits_ref_free', False))
             gpt_sovits_ref_free_checkbox.setStyleSheet(CHECKBOX_STYLE)
-            gpt_sovits_ref_free_card = SettingCard(
+            self.gpt_sovits_ref_free_card = SettingCard(
                 "免参考模式",
                 "不使用参考音频和文本（仅使用模型默认风格）",
                 gpt_sovits_ref_free_checkbox,
                 "tts.gpt_sovits_ref_free"
             )
-            gpt_sovits_ref_free_card.value_changed.connect(self.on_setting_changed)
-            group.add_card(gpt_sovits_ref_free_card)
+            self.gpt_sovits_ref_free_card.value_changed.connect(self.on_setting_changed)
+            group.add_card(self.gpt_sovits_ref_free_card)
 
             # GPT-SoVITS文本过滤选项
             gpt_sovits_filter_brackets_checkbox = QCheckBox()
@@ -1432,7 +1432,7 @@ class ElegantSettingsWidget(QWidget):
                 self.gpt_sovits_ref_text_card.setVisible(engine == 'gpt_sovits')
             if hasattr(self, 'gpt_sovits_ref_audio_card'):
                 self.gpt_sovits_ref_audio_card.setVisible(engine == 'gpt_sovits')
-            if hasattr(self, 'gpt_sovits_ref_free_card'):
+            if hasattr(self, 'self.gpt_sovits_ref_free_card'):
                 self.gpt_sovits_ref_free_card.setVisible(engine == 'gpt_sovits')
             if hasattr(self, 'gpt_sovits_filter_brackets_card'):
                 self.gpt_sovits_filter_brackets_card.setVisible(engine == 'gpt_sovits')
